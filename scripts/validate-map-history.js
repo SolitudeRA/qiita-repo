@@ -7,7 +7,7 @@ const {
     QIITA_ITEM_ID_PATTERN,
     RegistryValidationError,
     loadPublicationContext,
-} = require('./lib/article-registry');
+} = require('./lib/article-registry.ts');
 
 function defaultGitRunner(rootDir, args) {
     // Codex の Windows sandbox では child process の pipe capture が

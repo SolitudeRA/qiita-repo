@@ -8,10 +8,14 @@
     "validate:map-history": "node scripts/validate-map-history.js",
     "prepare:pull": "node scripts/prepare-pull.js",
     "build:articles": "node scripts/build-articles.js",
-    "release:bound": "node scripts/release-articles.js"
+    "release:bound": "node scripts/release-articles.js",
+    "typecheck": "tsc --noEmit --project tsconfig.strict.json"
   },
   "devDependencies": {
-    "@qiita/qiita-cli": "1.9.1"
+    "@qiita/qiita-cli": "1.9.1",
+    "@types/fs-extra": "11.0.4",
+    "@types/node": "24.13.3",
+    "typescript": "7.0.2"
   },
   "dependencies": {
     "fs-extra": "11.4.0",
