@@ -16,7 +16,41 @@ function normalizePublishBody(body) {
     while (lines.length > 0 && /^[\t ]*$/.test(lines[lines.length - 1])) {
         lines.pop();
     }
-    return lines.join('\n');
+
+    const normalized = [];
+    let fence = null;
+    for (const line of lines) {
+        const fenceMatch = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+        if (fence !== null) {
+            normalized.push(line);
+            if (fenceMatch
+                && fenceMatch[1][0] === fence.character
+                && fenceMatch[1].length >= fence.length
+                && /^[\t ]*$/.test(fenceMatch[2])) {
+                fence = null;
+            }
+            continue;
+        }
+
+        if (fenceMatch) {
+            fence = {
+                character: fenceMatch[1][0],
+                length: fenceMatch[1].length,
+            };
+            normalized.push(line);
+            continue;
+        }
+
+        if (/^[\t ]*$/.test(line)) {
+            if (normalized.length > 0
+                && !/^[\t ]*$/.test(normalized[normalized.length - 1])) {
+                normalized.push('');
+            }
+            continue;
+        }
+        normalized.push(line);
+    }
+    return normalized.join('\n');
 }
 
 function createPublishProjection(article) {

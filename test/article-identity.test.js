@@ -866,6 +866,43 @@ test('a built target with only local_updated_at changed publishes nothing', () =
     });
 });
 
+test('Qiita-collapsed redundant blank lines publish nothing', () => {
+    withFixture({}, ({ rootDir, prePublishDir, publicDir }) => {
+        const sourcePath = path.join(prePublishDir, 'alpha.md');
+        fs.writeFileSync(
+            sourcePath,
+            sourceMarkdown({
+                articleId: ARTICLE_A,
+                title: 'Alpha title',
+                body: 'Alpha first.\n\n\nAlpha second.\n',
+            }),
+            'utf8',
+        );
+        buildArticles({ rootDir });
+
+        const targetPath = path.join(publicDir, 'remote-alpha.md');
+        const pulled = matter(fs.readFileSync(targetPath, 'utf8'));
+        pulled.content = pulled.content.replace(
+            'Alpha first.\n\n\nAlpha second.',
+            'Alpha first.\n\nAlpha second.',
+        );
+        fs.writeFileSync(
+            targetPath,
+            matter.stringify(pulled.content, pulled.data),
+            'utf8',
+        );
+
+        const calls = [];
+        const result = releaseBoundArticles({
+            rootDir,
+            runner: (...args) => calls.push(args),
+        });
+        assert.equal(result.changed, 0);
+        assert.equal(result.unchanged, 2);
+        assert.deepEqual(calls, []);
+    });
+});
+
 test('a pure tag reorder publishes nothing', () => {
     withFixture(
         {
@@ -952,14 +989,22 @@ test('one tag edit publishes only its bound target', () => {
     });
 });
 
-test('body projection normalizes CRLF and edge blank lines only', () => {
+test('body projection normalizes transport and redundant blank lines', () => {
     assert.equal(
-        normalizePublishBody('\r\n \r\nAlpha\r\n\r\nBeta\r\n\t\r\n'),
+        normalizePublishBody('\r\n \r\nAlpha\r\n\r\n\r\nBeta\r\n\t\r\n'),
         'Alpha\n\nBeta',
+    );
+    assert.equal(
+        normalizePublishBody('Alpha\n\n\nBeta\n'),
+        normalizePublishBody('Alpha\n\nBeta\n'),
     );
     assert.notEqual(
         normalizePublishBody('Alpha\n\nBeta\n'),
         normalizePublishBody('Alpha\nBeta\n'),
+    );
+    assert.notEqual(
+        normalizePublishBody('```\nAlpha\n\n\nBeta\n```\n'),
+        normalizePublishBody('```\nAlpha\n\nBeta\n```\n'),
     );
 });
 
