@@ -1,6 +1,13 @@
-const fs = require('node:fs');
-const path = require('node:path');
-const matter = require('gray-matter');
+import type {
+    ArticleRegistryExports,
+    PublicationArticleWithTarget,
+    PublicationContextWithTargets,
+    RootDirOptions,
+} from './lib/article-registry.ts';
+
+const fs: typeof import('node:fs') = require('node:fs');
+const path: typeof import('node:path') = require('node:path');
+const matter: typeof import('gray-matter') = require('gray-matter');
 const {
     INLINE_REFERENCE_PATTERN,
     SERIES_END,
@@ -8,22 +15,36 @@ const {
     RegistryValidationError,
     articleMarker,
     loadPublicationContext,
-} = require('./lib/article-registry.ts');
+} = require('./lib/article-registry.ts') as ArticleRegistryExports;
 
-function replaceInlineArticleLinks(content, context) {
-    return content.replace(INLINE_REFERENCE_PATTERN, (_match, rawTarget) => {
-        const articleId = /^article:([0-9a-f]{32})$/.exec(rawTarget.trim())[1];
+function replaceInlineArticleLinks(
+    content: string,
+    context: PublicationContextWithTargets,
+): string {
+    return content.replace(INLINE_REFERENCE_PATTERN, (_match: string, rawTarget: string) => {
+        const articleIdMatch = /^article:([0-9a-f]{32})$/.exec(rawTarget.trim());
+        if (!articleIdMatch) {
+            throw new RegistryValidationError([
+                `不正なインライン記事参照です: ${rawTarget}`,
+            ]);
+        }
+        const articleId = articleIdMatch[1];
         const target = context.articlesById.get(articleId);
+        if (!target) {
+            throw new RegistryValidationError([
+                `Qiita published target ではない article_id への参照です: ${articleId}`,
+            ]);
+        }
         return `[${target.sourceData.title}]`
             + `(https://qiita.com/${context.qiitaUser}/items/${target.mapEntry.item_id})`;
     });
 }
 
-function countOccurrences(content, needle) {
+function countOccurrences(content: string, needle: string): number {
     return content.split(needle).length - 1;
 }
 
-function removeSeriesBlock(content) {
+function removeSeriesBlock(content: string): string {
     const startIndex = content.indexOf(SERIES_START);
     if (startIndex === -1) {
         return content;
@@ -33,7 +54,12 @@ function removeSeriesBlock(content) {
         .replace(/\n{3,}/g, '\n\n');
 }
 
-function insertSeriesBlock(content, article, seriesArticles, context) {
+function insertSeriesBlock(
+    content: string,
+    article: PublicationArticleWithTarget,
+    seriesArticles: PublicationArticleWithTarget[],
+    context: PublicationContextWithTargets,
+): string {
     const links = seriesArticles
         .filter((candidate) => candidate.articleId !== article.articleId)
         .map((candidate) => (
@@ -61,11 +87,23 @@ function insertSeriesBlock(content, article, seriesArticles, context) {
     return `${before}\n\n${block}\n\n${after}`;
 }
 
-function planSeriesLinks(options = {}) {
+interface SeriesLinkWrite {
+    articleId: string;
+    targetFile: string;
+    targetPath: string;
+    content: string;
+}
+
+export interface SeriesLinkPlan {
+    context: PublicationContextWithTargets;
+    writes: SeriesLinkWrite[];
+}
+
+function planSeriesLinks(options: RootDirOptions = {}): SeriesLinkPlan {
     const rootDir = path.resolve(options.rootDir || path.join(__dirname, '..'));
     const context = loadPublicationContext({ rootDir, requirePublicTargets: true });
-    const errors = [];
-    const seriesGroups = new Map();
+    const errors: string[] = [];
+    const seriesGroups = new Map<string, PublicationArticleWithTarget[]>();
 
     for (const article of context.articles) {
         if (typeof article.sourceData.series !== 'string') {
@@ -74,14 +112,14 @@ function planSeriesLinks(options = {}) {
         if (!seriesGroups.has(article.sourceData.series)) {
             seriesGroups.set(article.sourceData.series, []);
         }
-        seriesGroups.get(article.sourceData.series).push(article);
+        seriesGroups.get(article.sourceData.series)!.push(article);
     }
     for (const group of seriesGroups.values()) {
         // 既存実装と同じく source ファイル名順。ただし同一性には使用しない。
         group.sort((left, right) => left.sourceBasename.localeCompare(right.sourceBasename));
     }
 
-    const writes = [];
+    const writes: SeriesLinkWrite[] = [];
     for (const article of context.articles) {
         const content = article.target.content;
         const marker = articleMarker(article.articleId);
@@ -95,6 +133,13 @@ function planSeriesLinks(options = {}) {
         const series = article.sourceData.series;
         let updatedBody = content;
         if (typeof series === 'string') {
+            const seriesArticles = seriesGroups.get(series);
+            if (!seriesArticles) {
+                errors.push(
+                    `source(${article.articleId}, ${article.source}): series group がありません`,
+                );
+                continue;
+            }
             const startCount = countOccurrences(content, SERIES_START);
             const endCount = countOccurrences(content, SERIES_END);
             if (startCount !== endCount || startCount > 1) {
@@ -112,7 +157,7 @@ function planSeriesLinks(options = {}) {
             updatedBody = insertSeriesBlock(
                 updatedBody,
                 article,
-                seriesGroups.get(series),
+                seriesArticles,
                 context,
             );
         }
@@ -133,13 +178,19 @@ function planSeriesLinks(options = {}) {
     return { context, writes };
 }
 
-function writeSeriesLinks(options = {}) {
+function writeSeriesLinks(options: RootDirOptions = {}): SeriesLinkPlan {
     const plan = planSeriesLinks(options);
     for (const write of plan.writes) {
         fs.writeFileSync(write.targetPath, write.content, 'utf8');
         console.log(`Generated links: ${write.articleId} (${write.targetFile})`);
     }
     return plan;
+}
+
+export interface GenerateSeriesLinksExports {
+    planSeriesLinks: typeof planSeriesLinks;
+    replaceInlineArticleLinks: typeof replaceInlineArticleLinks;
+    writeSeriesLinks: typeof writeSeriesLinks;
 }
 
 module.exports = {
@@ -153,7 +204,7 @@ if (require.main === module) {
         const plan = writeSeriesLinks();
         console.log(`ID-first リンクを ${plan.writes.length} 記事へ生成しました。`);
     } catch (error) {
-        console.error(error.message);
+        console.error(error instanceof Error ? error.message : String(error));
         process.exitCode = 1;
     }
 }

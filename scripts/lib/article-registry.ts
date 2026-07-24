@@ -1,12 +1,12 @@
-type UnknownRecord = Record<string, unknown>;
-type ArticleId = string;
+export type UnknownRecord = Record<string, unknown>;
+export type ArticleId = string;
 
-interface ArticleMarker {
+export interface ArticleMarker {
     raw: string;
     articleId: string;
 }
 
-interface InlineReference {
+export interface InlineReference {
     raw: string;
     rawTarget: string;
     articleId: ArticleId | null;
@@ -18,12 +18,12 @@ interface ParsedMarkdown {
     content: string;
 }
 
-interface ArticleMapBinding {
+export interface ArticleMapBinding {
     binding_state: string;
     item_id: string;
 }
 
-interface ManifestPublicationEntry {
+export interface ManifestPublicationEntry {
     articleId: ArticleId;
     source: string;
     sourceBasename: string;
@@ -32,22 +32,44 @@ interface ManifestPublicationEntry {
     desired: string;
 }
 
-interface PublicArticle {
+export interface SourceArticleData extends UnknownRecord {
+    article_id: ArticleId;
+    local_updated_at: string;
+    organization_url_name?: string | null;
+    private?: boolean;
+    series?: string | null;
+    slide?: boolean;
+    tags: string[];
+    title: string;
+}
+
+export interface PublicArticleData extends UnknownRecord {
+    id: string;
+    organization_url_name: string | null;
+    slide: boolean;
+    updated_at: string;
+}
+
+export interface PublicArticle {
     file: string;
     basename: string;
     filePath: string;
-    data: UnknownRecord;
+    data: PublicArticleData;
     content: string;
 }
 
-interface PublicationArticle extends ManifestPublicationEntry {
-    sourceData: UnknownRecord;
+export interface PublicationArticle extends ManifestPublicationEntry {
+    sourceData: SourceArticleData;
     sourceBody: string;
     mapEntry: ArticleMapBinding;
     target?: PublicArticle;
 }
 
-interface PublicationContext {
+export interface PublicationArticleWithTarget extends PublicationArticle {
+    target: PublicArticle;
+}
+
+export interface PublicationContext {
     rootDir: string;
     prePublishDir: string;
     publicDir: string;
@@ -61,8 +83,16 @@ interface PublicationContext {
     publicFiles: PublicArticle[];
 }
 
-interface LoadPublicationOptions {
+export interface PublicationContextWithTargets extends PublicationContext {
+    articles: PublicationArticleWithTarget[];
+    articlesById: Map<ArticleId, PublicationArticleWithTarget>;
+}
+
+export interface RootDirOptions {
     rootDir?: string;
+}
+
+export interface LoadPublicationOptions extends RootDirOptions {
     requirePublicTargets?: boolean;
 }
 
@@ -311,6 +341,12 @@ function validateSourceArticle(
 }
 
 function loadPublicationContext(
+    options?: LoadPublicationOptions & { requirePublicTargets?: true },
+): PublicationContextWithTargets;
+function loadPublicationContext(
+    options: LoadPublicationOptions & { requirePublicTargets: false },
+): PublicationContext;
+function loadPublicationContext(
     options: LoadPublicationOptions = {},
 ): PublicationContext {
     const rootDir = path.resolve(options.rootDir || path.join(__dirname, '..', '..'));
@@ -538,7 +574,7 @@ function loadPublicationContext(
         }
         const article = {
             ...entry,
-            sourceData: sourceParsed.data,
+            sourceData: sourceParsed.data as SourceArticleData,
             sourceBody: sourceParsed.content,
             mapEntry: mapEntries[entry.articleId] as ArticleMapBinding,
         };
@@ -569,7 +605,7 @@ function loadPublicationContext(
                     file: file.name,
                     basename: path.basename(file.name, '.md'),
                     filePath,
-                    data: parsed.data,
+                    data: parsed.data as PublicArticleData,
                     content: parsed.content,
                 };
                 publicFiles.push(publicArticle);
@@ -686,6 +722,20 @@ function loadPublicationContext(
         articlesById,
         publicFiles,
     };
+}
+
+export interface ArticleRegistryExports {
+    ARTICLE_ID_PATTERN: RegExp;
+    QIITA_ITEM_ID_PATTERN: RegExp;
+    INLINE_REFERENCE_PATTERN: RegExp;
+    SERIES_START: string;
+    SERIES_END: string;
+    RegistryValidationError: typeof RegistryValidationError;
+    articleMarker: typeof articleMarker;
+    getArticleMarkers: typeof getArticleMarkers;
+    getInlineReferences: typeof getInlineReferences;
+    injectArticleMarker: typeof injectArticleMarker;
+    loadPublicationContext: typeof loadPublicationContext;
 }
 
 module.exports = {

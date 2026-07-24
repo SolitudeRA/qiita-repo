@@ -1,7 +1,9 @@
-const fs = require('node:fs');
-const path = require('node:path');
+import type { RootDirOptions } from './lib/article-registry.ts';
 
-function assertGeneratedPullTree(publicDir) {
+const fs: typeof import('node:fs') = require('node:fs');
+const path: typeof import('node:path') = require('node:path');
+
+function assertGeneratedPullTree(publicDir: string): void {
     for (const entry of fs.readdirSync(publicDir, { withFileTypes: true })) {
         const entryPath = path.join(publicDir, entry.name);
         if (entry.isSymbolicLink()) {
@@ -32,7 +34,12 @@ function assertGeneratedPullTree(publicDir) {
     }
 }
 
-function preparePull(options = {}) {
+export interface PreparePullResult {
+    rootDir: string;
+    publicDir: string;
+}
+
+function preparePull(options: RootDirOptions = {}): PreparePullResult {
     const rootDir = path.resolve(options.rootDir || path.join(__dirname, '..'));
     const publicDir = path.resolve(rootDir, 'public');
     if (path.dirname(publicDir) !== rootDir || path.basename(publicDir) !== 'public') {
@@ -54,6 +61,11 @@ function preparePull(options = {}) {
     return { rootDir, publicDir };
 }
 
+export interface PreparePullExports {
+    assertGeneratedPullTree: typeof assertGeneratedPullTree;
+    preparePull: typeof preparePull;
+}
+
 module.exports = {
     assertGeneratedPullTree,
     preparePull,
@@ -64,7 +76,7 @@ if (require.main === module) {
         const result = preparePull();
         console.log(`Prepared clean Qiita pull baseline: ${result.publicDir}`);
     } catch (error) {
-        console.error(error.message);
+        console.error(error instanceof Error ? error.message : String(error));
         process.exitCode = 1;
     }
 }

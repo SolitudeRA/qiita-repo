@@ -1,8 +1,37 @@
-const path = require('node:path');
-const { spawnSync } = require('node:child_process');
-const { loadPublicationContext } = require('./lib/article-registry.ts');
+import type {
+    ArticleRegistryExports,
+    PublicationContextWithTargets,
+    RootDirOptions,
+} from './lib/article-registry.ts';
 
-function getPublishTargets(options = {}) {
+const path: typeof import('node:path') = require('node:path');
+const { spawnSync }: typeof import('node:child_process') = require('node:child_process');
+const {
+    loadPublicationContext,
+} = require('./lib/article-registry.ts') as ArticleRegistryExports;
+
+export interface PublishTarget {
+    articleId: string;
+    itemId: string;
+    basename: string;
+}
+
+export interface PublishPlan {
+    context: PublicationContextWithTargets;
+    targets: PublishTarget[];
+}
+
+export type PublishRunner = (
+    rootDir: string,
+    basename: string,
+    target: PublishTarget,
+) => void;
+
+interface PublishOptions extends RootDirOptions {
+    runner?: PublishRunner;
+}
+
+function getPublishTargets(options: RootDirOptions = {}): PublishPlan {
     const rootDir = path.resolve(options.rootDir || path.join(__dirname, '..'));
     const context = loadPublicationContext({ rootDir, requirePublicTargets: true });
     return {
@@ -15,7 +44,7 @@ function getPublishTargets(options = {}) {
     };
 }
 
-function defaultRunner(rootDir, basename) {
+function defaultRunner(rootDir: string, basename: string): void {
     const executable = process.platform === 'win32' ? 'npx.cmd' : 'npx';
     const result = spawnSync(executable, ['qiita', 'publish', '--', basename], {
         cwd: rootDir,
@@ -31,7 +60,7 @@ function defaultRunner(rootDir, basename) {
     }
 }
 
-function publishPlanned(options = {}) {
+function publishPlanned(options: PublishOptions = {}): PublishPlan {
     const rootDir = path.resolve(options.rootDir || path.join(__dirname, '..'));
     const runner = options.runner || defaultRunner;
     if (!options.runner && !process.env.QIITA_TOKEN) {
@@ -48,6 +77,12 @@ function publishPlanned(options = {}) {
         runner(rootDir, target.basename, target);
     }
     return plan;
+}
+
+export interface PublishArticlesExports {
+    defaultRunner: typeof defaultRunner;
+    getPublishTargets: typeof getPublishTargets;
+    publishPlanned: typeof publishPlanned;
 }
 
 module.exports = {

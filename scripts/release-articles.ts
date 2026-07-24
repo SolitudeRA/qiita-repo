@@ -1,10 +1,67 @@
-const path = require('node:path');
-const { isDeepStrictEqual } = require('node:util');
-const { buildArticles } = require('./build-articles');
-const { loadPublicationContext } = require('./lib/article-registry.ts');
-const { defaultRunner } = require('./publish-articles');
+import type {
+    BuildArticlesExports,
+    BuildArticlesResult,
+} from './build-articles.ts';
+import type {
+    ArticleRegistryExports,
+    PublicationArticleWithTarget,
+    PublicationContextWithTargets,
+    RootDirOptions,
+} from './lib/article-registry.ts';
+import type {
+    PublishArticlesExports,
+    PublishRunner,
+    PublishTarget,
+} from './publish-articles.ts';
 
-function normalizePublishBody(body) {
+const path: typeof import('node:path') = require('node:path');
+const { isDeepStrictEqual }: typeof import('node:util') = require('node:util');
+const {
+    buildArticles,
+} = require('./build-articles.ts') as BuildArticlesExports;
+const {
+    loadPublicationContext,
+} = require('./lib/article-registry.ts') as ArticleRegistryExports;
+const {
+    defaultRunner,
+} = require('./publish-articles.ts') as PublishArticlesExports;
+
+interface MarkdownFence {
+    character: string;
+    length: number;
+}
+
+export interface PublishProjection {
+    title: string;
+    tags: string[];
+    private: boolean;
+    organization_url_name: string | null;
+    slide: boolean;
+    body: string;
+}
+
+export interface BoundTargetIdentity extends PublishTarget {}
+
+export interface BoundTargetSnapshot extends BoundTargetIdentity {
+    key: string;
+    projection: PublishProjection;
+}
+
+export interface ReleaseResult {
+    context: PublicationContextWithTargets;
+    targets: PublishTarget[];
+    changed: number;
+    unchanged: number;
+}
+
+type ArticleBuilder = (options: RootDirOptions) => BuildArticlesResult;
+
+interface ReleaseOptions extends RootDirOptions {
+    runner?: PublishRunner;
+    builder?: ArticleBuilder;
+}
+
+function normalizePublishBody(body: unknown): string {
     if (typeof body !== 'string') {
         throw new Error('公開投影の body は文字列である必要があります');
     }
@@ -17,8 +74,8 @@ function normalizePublishBody(body) {
         lines.pop();
     }
 
-    const normalized = [];
-    let fence = null;
+    const normalized: string[] = [];
+    let fence: MarkdownFence | null = null;
     for (const line of lines) {
         const fenceMatch = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
         if (fence !== null) {
@@ -53,11 +110,9 @@ function normalizePublishBody(body) {
     return normalized.join('\n');
 }
 
-function createPublishProjection(article) {
-    if (!article.target) {
-        throw new Error(`公開対象がありません: ${article.articleId}`);
-    }
-
+function createPublishProjection(
+    article: PublicationArticleWithTarget,
+): PublishProjection {
     const { data, content } = article.target;
     const label = `${article.articleId} -> ${article.mapEntry.item_id}`;
     if (typeof data.title !== 'string' || data.title.trim() === '') {
@@ -91,7 +146,7 @@ function createPublishProjection(article) {
     };
 }
 
-function targetIdentity(article) {
+function targetIdentity(article: PublicationArticleWithTarget): BoundTargetIdentity {
     return {
         articleId: article.articleId,
         itemId: article.mapEntry.item_id,
@@ -99,7 +154,7 @@ function targetIdentity(article) {
     };
 }
 
-function identityKey(identity) {
+function identityKey(identity: BoundTargetIdentity): string {
     return JSON.stringify([
         identity.articleId,
         identity.itemId,
@@ -107,9 +162,11 @@ function identityKey(identity) {
     ]);
 }
 
-function snapshotBoundTargets(context) {
-    const snapshots = [];
-    const seen = new Set();
+function snapshotBoundTargets(
+    context: PublicationContextWithTargets,
+): BoundTargetSnapshot[] {
+    const snapshots: BoundTargetSnapshot[] = [];
+    const seen = new Set<string>();
     for (const article of context.articles) {
         const identity = targetIdentity(article);
         const key = identityKey(identity);
@@ -129,7 +186,10 @@ function snapshotBoundTargets(context) {
     return snapshots;
 }
 
-function assertSameBoundTargetSet(before, after) {
+function assertSameBoundTargetSet(
+    before: readonly BoundTargetSnapshot[],
+    after: readonly BoundTargetSnapshot[],
+): void {
     const beforeKeys = new Set(before.map((snapshot) => snapshot.key));
     const afterKeys = new Set(after.map((snapshot) => snapshot.key));
     const missing = [...beforeKeys].filter((key) => !afterKeys.has(key));
@@ -142,7 +202,7 @@ function assertSameBoundTargetSet(before, after) {
     }
 }
 
-function releaseBoundArticles(options = {}) {
+function releaseBoundArticles(options: ReleaseOptions = {}): ReleaseResult {
     const rootDir = path.resolve(options.rootDir || path.join(__dirname, '..'));
     const runner = options.runner || defaultRunner;
     const builder = options.builder || buildArticles;
@@ -178,18 +238,20 @@ function releaseBoundArticles(options = {}) {
     const beforeByKey = new Map(
         before.map((snapshot) => [snapshot.key, snapshot]),
     );
-    const targets = after
-        .filter((snapshot) => (
-            !isDeepStrictEqual(
-                beforeByKey.get(snapshot.key).projection,
-                snapshot.projection,
-            )
-        ))
-        .map((snapshot) => ({
-            articleId: snapshot.articleId,
-            itemId: snapshot.itemId,
-            basename: snapshot.basename,
-        }));
+    const targets: PublishTarget[] = [];
+    for (const snapshot of after) {
+        const previous = beforeByKey.get(snapshot.key);
+        if (!previous) {
+            throw new Error(`build 前の公開対象 snapshot がありません: ${snapshot.key}`);
+        }
+        if (!isDeepStrictEqual(previous.projection, snapshot.projection)) {
+            targets.push({
+                articleId: snapshot.articleId,
+                itemId: snapshot.itemId,
+                basename: snapshot.basename,
+            });
+        }
+    }
 
     // ここまで runner は一度も呼ばない。全件の再検証・同一性照合・diff
     // 計画が成功した後だけ、変更された明示的 binding を公開する。
@@ -209,6 +271,14 @@ function releaseBoundArticles(options = {}) {
     };
 }
 
+export interface ReleaseArticlesExports {
+    assertSameBoundTargetSet: typeof assertSameBoundTargetSet;
+    createPublishProjection: typeof createPublishProjection;
+    normalizePublishBody: typeof normalizePublishBody;
+    releaseBoundArticles: typeof releaseBoundArticles;
+    snapshotBoundTargets: typeof snapshotBoundTargets;
+}
+
 module.exports = {
     assertSameBoundTargetSet,
     createPublishProjection,
@@ -225,7 +295,7 @@ if (require.main === module) {
             + `${result.unchanged} unchanged articles were skipped.`,
         );
     } catch (error) {
-        console.error(error.message);
+        console.error(error instanceof Error ? error.message : String(error));
         process.exitCode = 1;
     }
 }

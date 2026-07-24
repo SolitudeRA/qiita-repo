@@ -1,14 +1,26 @@
-const fs = require('node:fs');
-const path = require('node:path');
-const matter = require('gray-matter');
+import type {
+    ArticleRegistryExports,
+    PublicationContextWithTargets,
+    RootDirOptions,
+    UnknownRecord,
+} from './lib/article-registry.ts';
+
+const fs: typeof import('node:fs') = require('node:fs');
+const path: typeof import('node:path') = require('node:path');
+const matter: typeof import('gray-matter') = require('gray-matter');
 const {
     injectArticleMarker,
     loadPublicationContext,
-} = require('./lib/article-registry.ts');
+} = require('./lib/article-registry.ts') as ArticleRegistryExports;
 
 const ASCII_TAG_IDENTITY_SEPARATORS = /[._\-\u0009-\u000d\u0020]/g;
 
-function sourceOrRemote(sourceData, remoteData, fieldName, fallback) {
+function sourceOrRemote<T>(
+    sourceData: UnknownRecord,
+    remoteData: UnknownRecord,
+    fieldName: string,
+    fallback: T,
+): unknown {
     if (Object.hasOwn(sourceData, fieldName)) {
         return sourceData[fieldName];
     }
@@ -18,7 +30,7 @@ function sourceOrRemote(sourceData, remoteData, fieldName, fallback) {
     return fallback;
 }
 
-function normalizeTagIdentity(tag) {
+function normalizeTagIdentity(tag: unknown): string | null {
     if (typeof tag !== 'string') {
         return null;
     }
@@ -29,12 +41,15 @@ function normalizeTagIdentity(tag) {
     return identity === '' ? null : identity;
 }
 
-function indexUniqueTags(tags) {
+function indexUniqueTags(tags: unknown): Map<string, string> | null {
     if (!Array.isArray(tags)) {
         return null;
     }
-    const byIdentity = new Map();
+    const byIdentity = new Map<string, string>();
     for (const tag of tags) {
+        if (typeof tag !== 'string') {
+            return null;
+        }
         const identity = normalizeTagIdentity(tag);
         if (identity === null || byIdentity.has(identity)) {
             return null;
@@ -44,8 +59,11 @@ function indexUniqueTags(tags) {
     return byIdentity;
 }
 
-function selectBoundTargetTags(sourceTags, remoteTags) {
+function selectBoundTargetTags(sourceTags: unknown, remoteTags: unknown): unknown {
     const fallback = Array.isArray(sourceTags) ? [...sourceTags] : sourceTags;
+    if (!Array.isArray(sourceTags)) {
+        return fallback;
+    }
     const sourceByIdentity = indexUniqueTags(sourceTags);
     const remoteByIdentity = indexUniqueTags(remoteTags);
     // 既存 binding の表示差分だけを保護する。集合差分や衝突は実編集として
@@ -60,12 +78,27 @@ function selectBoundTargetTags(sourceTags, remoteTags) {
     ) {
         return fallback;
     }
-    return sourceTags.map(
-        (tag) => remoteByIdentity.get(normalizeTagIdentity(tag)),
-    );
+    return sourceTags.map((tag) => {
+        const identity = normalizeTagIdentity(tag);
+        return identity === null ? tag : (remoteByIdentity.get(identity) ?? tag);
+    });
 }
 
-function planPublicArticles(options = {}) {
+interface PublicArticleWrite {
+    articleId: string;
+    itemId: string;
+    source: string;
+    targetFile: string;
+    targetPath: string;
+    content: string;
+}
+
+export interface PublicArticlePlan {
+    context: PublicationContextWithTargets;
+    writes: PublicArticleWrite[];
+}
+
+function planPublicArticles(options: RootDirOptions = {}): PublicArticlePlan {
     const rootDir = path.resolve(options.rootDir || path.join(__dirname, '..'));
 
     // loadPublicationContext は manifest / map / source / public の全件を検証する。
@@ -106,7 +139,7 @@ function planPublicArticles(options = {}) {
     return { context, writes };
 }
 
-function writePublicArticles(options = {}) {
+function writePublicArticles(options: RootDirOptions = {}): PublicArticlePlan {
     const plan = planPublicArticles(options);
     for (const write of plan.writes) {
         fs.writeFileSync(write.targetPath, write.content, 'utf8');
@@ -115,6 +148,12 @@ function writePublicArticles(options = {}) {
         );
     }
     return plan;
+}
+
+export interface ParseArticlesExports {
+    planPublicArticles: typeof planPublicArticles;
+    selectBoundTargetTags: typeof selectBoundTargetTags;
+    writePublicArticles: typeof writePublicArticles;
 }
 
 module.exports = {
@@ -128,7 +167,7 @@ if (require.main === module) {
         const plan = writePublicArticles();
         console.log(`ID-first 形式で ${plan.writes.length} 記事を準備しました。`);
     } catch (error) {
-        console.error(error.message);
+        console.error(error instanceof Error ? error.message : String(error));
         process.exitCode = 1;
     }
 }

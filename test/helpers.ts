@@ -1,7 +1,7 @@
-const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
-const matter = require('gray-matter');
+const fs: typeof import('node:fs') = require('node:fs');
+const os: typeof import('node:os') = require('node:os');
+const path: typeof import('node:path') = require('node:path');
+const matter: typeof import('gray-matter') = require('gray-matter');
 
 const ARTICLE_A = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const ARTICLE_B = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
@@ -9,11 +9,69 @@ const ARTICLE_IGNORED = 'cccccccccccccccccccccccccccccccc';
 const ITEM_A = '1111111111111111111a';
 const ITEM_B = '2222222222222222222b';
 
-function writeJson(filePath, value) {
+export interface SourceMarkdownOptions {
+    articleId: string;
+    title: string;
+    series?: string | null;
+    body?: string;
+    tags?: string[];
+}
+
+export interface PublicMarkdownOptions {
+    itemId: string;
+    title: string;
+    body?: string;
+    isPrivate?: boolean;
+    tags?: string[];
+}
+
+export interface FixtureOptions {
+    includeIgnoredArticle?: boolean;
+    alphaSourceTags?: string[];
+    betaSourceTags?: string[];
+    alphaRemoteTags?: string[];
+    betaRemoteTags?: string[];
+    betaSeries?: string | null;
+}
+
+export interface FixtureManifestArticle {
+    article_id: string;
+    source: string;
+    article_state: string;
+    targets: Record<string, { desired: string }>;
+}
+
+export interface FixtureManifest {
+    schema_version: number;
+    articles: FixtureManifestArticle[];
+}
+
+export interface FixtureArticleMap extends Record<string, unknown> {
+    schema_version: number;
+    platform: string;
+    qiita_user: string;
+    bindings: Record<string, {
+        item_id: string;
+        binding_state: string;
+    }>;
+}
+
+export interface Fixture {
+    rootDir: string;
+    prePublishDir: string;
+    publicDir: string;
+    manifest: FixtureManifest;
+    articleMap: FixtureArticleMap;
+    cleanup: () => void;
+    readJson: <T = unknown>(relativePath: string) => T;
+    writeJson: (relativePath: string, value: unknown) => void;
+}
+
+function writeJson(filePath: string, value: unknown): void {
     fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
-function sourceMarkdown(options) {
+function sourceMarkdown(options: SourceMarkdownOptions): string {
     const {
         articleId,
         title,
@@ -30,7 +88,7 @@ function sourceMarkdown(options) {
     });
 }
 
-function publicMarkdown(options) {
+function publicMarkdown(options: PublicMarkdownOptions): string {
     const {
         itemId,
         title,
@@ -50,14 +108,14 @@ function publicMarkdown(options) {
     });
 }
 
-function createFixture(options = {}) {
+function createFixture(options: FixtureOptions = {}): Fixture {
     const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qiita-identity-'));
     const prePublishDir = path.join(rootDir, 'pre-publish');
     const publicDir = path.join(rootDir, 'public');
     fs.mkdirSync(prePublishDir);
     fs.mkdirSync(publicDir);
 
-    const manifest = {
+    const manifest: FixtureManifest = {
         schema_version: 1,
         articles: [
             {
@@ -95,7 +153,7 @@ function createFixture(options = {}) {
         });
     }
 
-    const articleMap = {
+    const articleMap: FixtureArticleMap = {
         schema_version: 1,
         platform: 'qiita',
         qiita_user: 'fixture-user',
@@ -162,13 +220,26 @@ function createFixture(options = {}) {
         cleanup() {
             fs.rmSync(rootDir, { recursive: true, force: true });
         },
-        readJson(relativePath) {
-            return JSON.parse(fs.readFileSync(path.join(rootDir, relativePath), 'utf8'));
+        readJson<T = unknown>(relativePath: string): T {
+            return JSON.parse(
+                fs.readFileSync(path.join(rootDir, relativePath), 'utf8'),
+            ) as T;
         },
-        writeJson(relativePath, value) {
+        writeJson(relativePath: string, value: unknown): void {
             writeJson(path.join(rootDir, relativePath), value);
         },
     };
+}
+
+export interface TestHelpersExports {
+    ARTICLE_A: typeof ARTICLE_A;
+    ARTICLE_B: typeof ARTICLE_B;
+    ARTICLE_IGNORED: typeof ARTICLE_IGNORED;
+    ITEM_A: typeof ITEM_A;
+    ITEM_B: typeof ITEM_B;
+    createFixture: typeof createFixture;
+    publicMarkdown: typeof publicMarkdown;
+    sourceMarkdown: typeof sourceMarkdown;
 }
 
 module.exports = {
