@@ -21,6 +21,11 @@ export interface PublishPlan {
     targets: PublishTarget[];
 }
 
+export interface QiitaCliInvocation {
+    command: string;
+    args: string[];
+}
+
 export type PublishRunner = (
     rootDir: string,
     basename: string,
@@ -44,14 +49,28 @@ function getPublishTargets(options: RootDirOptions = {}): PublishPlan {
     };
 }
 
+function createQiitaCliInvocation(args: string[]): QiitaCliInvocation {
+    return {
+        command: process.execPath,
+        args: [
+            require.resolve('@qiita/qiita-cli/dist/main.js'),
+            ...args,
+        ],
+    };
+}
+
 function defaultRunner(rootDir: string, basename: string): void {
-    const executable = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-    const result = spawnSync(executable, ['qiita', 'publish', '--', basename], {
-        cwd: rootDir,
-        env: process.env,
-        stdio: 'inherit',
-        shell: false,
-    });
+    const invocation = createQiitaCliInvocation(['publish', '--', basename]);
+    const result = spawnSync(
+        invocation.command,
+        invocation.args,
+        {
+            cwd: rootDir,
+            env: process.env,
+            stdio: 'inherit',
+            shell: false,
+        },
+    );
     if (result.error) {
         throw result.error;
     }
@@ -80,12 +99,14 @@ function publishPlanned(options: PublishOptions = {}): PublishPlan {
 }
 
 export interface PublishArticlesExports {
+    createQiitaCliInvocation: typeof createQiitaCliInvocation;
     defaultRunner: typeof defaultRunner;
     getPublishTargets: typeof getPublishTargets;
     publishPlanned: typeof publishPlanned;
 }
 
 module.exports = {
+    createQiitaCliInvocation,
     defaultRunner,
     getPublishTargets,
     publishPlanned,

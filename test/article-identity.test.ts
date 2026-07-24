@@ -43,6 +43,7 @@ const {
     writeSeriesLinks,
 } = require('../scripts/generate-series-links.ts') as GenerateSeriesLinksExports;
 const {
+    createQiitaCliInvocation,
     publishPlanned,
 } = require('../scripts/publish-articles.ts') as PublishArticlesExports;
 const {
@@ -382,6 +383,109 @@ test('series:null and manifest entries without a Qiita target are accepted', () 
     );
 });
 
+test('pre-publish rejects nested directories and unsupported regular files', () => {
+    withFixture({}, ({ rootDir, prePublishDir }) => {
+        const nestedDirectory = path.join(prePublishDir, 'nested.md');
+        fs.mkdirSync(nestedDirectory);
+        fs.writeFileSync(
+            path.join(nestedDirectory, 'nested.md'),
+            'Nested source.\n',
+            'utf8',
+        );
+        assert.throws(
+            () => loadPublicationContext({
+                rootDir,
+                requirePublicTargets: false,
+            }),
+            /pre-publish 直下には通常ファイルだけを配置してください/,
+        );
+
+        fs.rmSync(nestedDirectory, { recursive: true });
+        fs.writeFileSync(
+            path.join(prePublishDir, 'notes.txt'),
+            'Unexpected source-tree metadata.\n',
+            'utf8',
+        );
+        assert.throws(
+            () => loadPublicationContext({
+                rootDir,
+                requirePublicTargets: false,
+            }),
+            /pre-publish には manifest\.json と\.md 記事だけを配置してください/,
+        );
+    });
+});
+
+test('pre-publish rejects a symbolic-link root', (t) => {
+    const fixture = createFixture({});
+    const linkedTarget = path.join(fixture.rootDir, 'pre-publish-target');
+    try {
+        fs.renameSync(fixture.prePublishDir, linkedTarget);
+        try {
+            fs.symlinkSync(
+                linkedTarget,
+                fixture.prePublishDir,
+                process.platform === 'win32' ? 'junction' : 'dir',
+            );
+        } catch (error) {
+            t.skip(`directory symlink creation is unavailable: ${describeError(error)}`);
+            return;
+        }
+
+        assert.throws(
+            () => loadPublicationContext({
+                rootDir: fixture.rootDir,
+                requirePublicTargets: false,
+            }),
+            /pre-publish は通常のディレクトリである必要があります/,
+        );
+    } finally {
+        fixture.cleanup();
+    }
+});
+
+test('pre-publish rejects source and manifest symbolic links', (t) => {
+    const fixture = createFixture({});
+    try {
+        const sourceLink = path.join(fixture.prePublishDir, 'linked.md');
+        try {
+            fs.symlinkSync(
+                path.join(fixture.prePublishDir, 'alpha.md'),
+                sourceLink,
+                'file',
+            );
+        } catch (error) {
+            t.skip(`symlink creation is unavailable: ${describeError(error)}`);
+            return;
+        }
+
+        assert.throws(
+            () => loadPublicationContext({
+                rootDir: fixture.rootDir,
+                requirePublicTargets: false,
+            }),
+            /pre-publish 直下には通常ファイルだけを配置してください/,
+        );
+        fs.rmSync(sourceLink);
+
+        const manifestPath = path.join(fixture.prePublishDir, 'manifest.json');
+        const manifestTarget = path.join(fixture.rootDir, 'manifest-target.json');
+        fs.copyFileSync(manifestPath, manifestTarget);
+        fs.rmSync(manifestPath);
+        fs.symlinkSync(manifestTarget, manifestPath, 'file');
+
+        assert.throws(
+            () => loadPublicationContext({
+                rootDir: fixture.rootDir,
+                requirePublicTargets: false,
+            }),
+            /pre-publish\/manifest\.json は通常ファイルである必要があります/,
+        );
+    } finally {
+        fixture.cleanup();
+    }
+});
+
 test('missing or mismatched source article_id fails before writing public files', () => {
     withFixture({}, ({ rootDir, prePublishDir, publicDir }) => {
         const targetPath = path.join(publicDir, 'remote-alpha.md');
@@ -712,6 +816,34 @@ test('publishing invokes only mapped basenames and never an all/force path', () 
             [ITEM_A, ITEM_B].sort(),
         );
     });
+});
+
+test('local Qiita CLI invocation is shell-free and executable cross-platform', () => {
+    const repositoryRoot = path.join(__dirname, '..');
+    const packageJson = JSON.parse(fs.readFileSync(
+        path.join(repositoryRoot, 'package.json'),
+        'utf8',
+    ));
+    const invocation = createQiitaCliInvocation(['--version']);
+
+    assert.equal(invocation.command, process.execPath);
+    assert.match(
+        invocation.args[0],
+        /@qiita[\\/]qiita-cli[\\/]dist[\\/]main\.js$/,
+    );
+    assert.deepEqual(invocation.args.slice(1), ['--version']);
+
+    const result = spawnSync(invocation.command, invocation.args, {
+        cwd: repositoryRoot,
+        encoding: 'utf8',
+        shell: false,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0);
+    assert.match(
+        `${result.stdout}${result.stderr}`,
+        new RegExp(packageJson.devDependencies['@qiita/qiita-cli']),
+    );
 });
 
 test('pull preparation removes only the generated public directory', () => {
@@ -1173,12 +1305,16 @@ test('incomplete build coverage fails before the first publish runner call', () 
     });
 });
 
-test('workflow uses the push base revision and has no bulk or forced publish path', () => {
+test('workflow separates read-only PR validation from main push publication', () => {
     const repositoryRoot = path.join(__dirname, '..');
     const packageJson = JSON.parse(fs.readFileSync(
         path.join(repositoryRoot, 'package.json'),
         'utf8',
     ));
+    const nodeVersion = fs.readFileSync(
+        path.join(repositoryRoot, '.node-version'),
+        'utf8',
+    ).trim();
     const workflow = fs.readFileSync(
         path.join(repositoryRoot, '.github', 'workflows', 'publish_articles.yml'),
         'utf8',
@@ -1191,13 +1327,48 @@ test('workflow uses the push base revision and has no bulk or forced publish pat
         path.join(repositoryRoot, 'scripts', 'release-articles.ts'),
         'utf8',
     );
-    assert.match(workflow, /BASELINE_REF: \$\{\{ github\.event\.before \}\}/);
+    assert.equal(nodeVersion, '24.18.0');
+    assert.equal(packageJson.name, 'qiita-repo');
+    assert.equal(packageJson.version, '1.0.0');
+    assert.equal(packageJson.private, true);
+    assert.equal(packageJson.type, 'commonjs');
+    assert.equal(
+        packageJson.scripts.test,
+        'node --test test/article-identity.test.ts',
+    );
+    assert.match(workflow, /^  pull_request:\r?$/m);
+    const pullRequestBlock = workflow.slice(
+        workflow.indexOf('  pull_request:'),
+        workflow.indexOf('  push:'),
+    );
+    assert.doesNotMatch(pullRequestBlock, /^\s+paths:/m);
+    assert.match(workflow, /^  push:\r?$/m);
+    assert.match(workflow, /node-version-file: "\.node-version"/);
+    assert.match(workflow, /- "\.node-version"/);
+    assert.match(workflow, /- "tsconfig\.json"/);
+    assert.match(
+        workflow,
+        /BASELINE_REF: \$\{\{ github\.event_name == 'pull_request' && github\.event\.pull_request\.base\.sha \|\| github\.event\.before \}\}/,
+    );
     assert.match(workflow, /run: npm ci/);
     assert.match(workflow, /run: npm test/);
     assert.match(workflow, /contents: read/);
-    assert.match(workflow, /run: npm run prepare:pull/);
-    assert.match(workflow, /run: npx qiita pull --force/);
-    assert.match(workflow, /run: npm run release:bound/);
+    assert.match(
+        workflow,
+        /- name: Prepare Clean Pull Baseline\r?\n\s+if: github\.event_name == 'push'\r?\n\s+run: npm run prepare:pull/,
+    );
+    assert.match(
+        workflow,
+        /- name: Pull Bound Targets from Qiita\r?\n\s+if: github\.event_name == 'push'[\s\S]*?\s+run: npx --no-install qiita pull --force/,
+    );
+    assert.match(
+        workflow,
+        /- name: Validate Manifest, Sources, Map, and Pulled Targets\r?\n\s+if: github\.event_name == 'push'\r?\n\s+run: npm run validate/,
+    );
+    assert.match(
+        workflow,
+        /- name: Build, Diff, and Publish Changed Bound Targets\r?\n\s+if: github\.event_name == 'push'[\s\S]*?\s+run: npm run release:bound/,
+    );
     assert.doesNotMatch(workflow, /run: npm run publish:planned/);
     assert.equal(packageJson.scripts['release:bound'], 'node scripts/release-articles.ts');
     assert.equal(
@@ -1206,6 +1377,15 @@ test('workflow uses the push base revision and has no bulk or forced publish pat
     );
     assert.equal(Object.hasOwn(packageJson.scripts, 'publish:planned'), false);
     assert.doesNotMatch(publishScript, /require\.main\s*===\s*module/);
+    assert.match(publishScript, /command: process\.execPath/);
+    assert.match(
+        publishScript,
+        /require\.resolve\('@qiita\/qiita-cli\/dist\/main\.js'\)/,
+    );
+    assert.match(
+        publishScript,
+        /createQiitaCliInvocation\(\['publish', '--', basename\]\)/,
+    );
     assert.doesNotMatch(
         workflow,
         /npx\s+qiita\s+publish[^\r\n]*(?:--all|--force)/,
@@ -1214,7 +1394,7 @@ test('workflow uses the push base revision and has no bulk or forced publish pat
     assert.doesNotMatch(publishScript, /['"]--(?:all|force)['"]/);
     assert.doesNotMatch(releaseScript, /['"]--(?:all|force)['"]/);
     const resetIndex = workflow.indexOf('run: npm run prepare:pull');
-    const pullIndex = workflow.indexOf('run: npx qiita pull --force');
+    const pullIndex = workflow.indexOf('run: npx --no-install qiita pull --force');
     const validateIndex = workflow.indexOf('run: npm run validate', pullIndex);
     const releaseIndex = workflow.indexOf('run: npm run release:bound');
     assert.ok(resetIndex < pullIndex);

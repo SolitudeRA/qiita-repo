@@ -70,7 +70,7 @@ local_updated_at: '2026-07-23T00:00:00.000Z'
 }
 ```
 
-脚本使用 `item_id` 在 `npx qiita pull` 的结果中定位目标，不按标题或文件名匹配。
+脚本使用 `item_id` 在 `npx --no-install qiita pull` 的结果中定位目标，不按标题或文件名匹配。
 因此修改标题或源文件 basename 后仍会更新原来的 Qiita item。
 
 对于既有 binding，如果源标签和 pull 到的远端标签在规范化后是一一对应、
@@ -80,8 +80,9 @@ local_updated_at: '2026-07-23T00:00:00.000Z'
 连字符和空白；日文固有标点不会被删除。任何真实新增、删除、无法匹配、空身份或规范化冲突都会
 安全回退到源标签，因此真实标签编辑仍会生效。
 
-工作流会把当前 binding 与一次 push 之前的 revision
-（`github.event.before`）比较。既有 `article_id -> item_id` 不允许修改或删除，
+工作流会把当前 binding 与 PR 的 base revision（`pull_request.base.sha`）或
+一次 push 之前的 revision（`github.event.before`）比较。既有
+`article_id -> item_id` 不允许修改或删除，
 `qiita_user` 也不能在普通发布中漂移；
 只有 base revision 的可达历史从未出现过 `article-map.json`，首次引入才可跳过
 比较；当前树缺失但历史出现过 map 时，会回溯最近一份 map 继续校验。新增文章在
@@ -97,13 +98,13 @@ npm run typecheck
 npm test
 npm run validate:map-history -- --baseline-ref <base-revision>
 npm run prepare:pull
-npx qiita pull --force
+npx --no-install qiita pull --force
 npm run validate
 ```
 
 `npm run build:articles` 可在临时副本中作为生成检查，因为它会改写 `public/`。
 真实发布前必须先用 `prepare:pull` 删除并重建这个纯生成目录，再执行只读的
-`npx qiita pull --force`。这既覆盖本地生成结果，也清除远端已删除或已不可见目标
+`npx --no-install qiita pull --force`。这既覆盖本地生成结果，也清除远端已删除或已不可见目标
 留下的陈旧文件，并会永久丢弃 `public/` 内所有本地生成物；缺失 binding 会在随后全量验证时失败。验证后应立即运行单进程
 orchestrator，在这两步之间不能再单独 build。这里的 `--force` 只用于 pull 的
 本地基线恢复，不是强制 publish。GitHub Actions 也遵循同一顺序。发布入口需要
@@ -140,12 +141,13 @@ qiita publish -- <mapped-public-basename>
 
 ## 自动化顺序
 
-GitHub Actions 使用只读仓库权限并执行：
+GitHub Actions 使用只读仓库权限。PR 只执行安装、typecheck、测试和 binding
+历史校验，不读取 `QIITA_TOKEN`，也不会 pull 或 publish。`main` push 才继续执行：
 
 1. `npm ci`
 2. `npm test`
-3. 对比 `github.event.before` 验证 binding 不可变
-4. 清空纯生成的 `public/`，再用 `npx qiita pull --force` 恢复确定的只读远端基线
+3. 对比对应事件的 base revision 验证 binding 不可变
+4. 清空纯生成的 `public/`，再用 `npx --no-install qiita pull --force` 恢复确定的只读远端基线
 5. 全量 preflight
 6. 单进程 snapshot、生成 ID marker/系列链接/ID 引用，再全量重验
 7. 仅逐条发布可发布投影发生变化的明确绑定目标
