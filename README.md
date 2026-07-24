@@ -93,6 +93,7 @@ local_updated_at: '2026-07-23T00:00:00.000Z'
 
 ```bash
 npm ci
+npm run typecheck
 npm test
 npm run validate:map-history -- --baseline-ref <base-revision>
 npm run prepare:pull

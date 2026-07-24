@@ -1,7 +1,7 @@
 const path = require('node:path');
 const { isDeepStrictEqual } = require('node:util');
 const { buildArticles } = require('./build-articles');
-const { loadPublicationContext } = require('./lib/article-registry');
+const { loadPublicationContext } = require('./lib/article-registry.ts');
 const { defaultRunner } = require('./publish-articles');
 
 function normalizePublishBody(body) {

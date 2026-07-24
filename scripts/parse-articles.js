@@ -4,7 +4,7 @@ const matter = require('gray-matter');
 const {
     injectArticleMarker,
     loadPublicationContext,
-} = require('./lib/article-registry');
+} = require('./lib/article-registry.ts');
 
 const ASCII_TAG_IDENTITY_SEPARATORS = /[._\-\u0009-\u000d\u0020]/g;
 

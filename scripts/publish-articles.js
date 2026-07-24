@@ -1,6 +1,6 @@
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { loadPublicationContext } = require('./lib/article-registry');
+const { loadPublicationContext } = require('./lib/article-registry.ts');
 
 function getPublishTargets(options = {}) {
     const rootDir = path.resolve(options.rootDir || path.join(__dirname, '..'));

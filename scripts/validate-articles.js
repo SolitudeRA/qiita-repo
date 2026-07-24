@@ -1,5 +1,5 @@
 const path = require('node:path');
-const { loadPublicationContext } = require('./lib/article-registry');
+const { loadPublicationContext } = require('./lib/article-registry.ts');
 
 function validateArticles(options = {}) {
     const rootDir = path.resolve(options.rootDir || path.join(__dirname, '..'));

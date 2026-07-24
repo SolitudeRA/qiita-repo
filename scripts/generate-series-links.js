@@ -8,7 +8,7 @@ const {
     RegistryValidationError,
     articleMarker,
     loadPublicationContext,
-} = require('./lib/article-registry');
+} = require('./lib/article-registry.ts');
 
 function replaceInlineArticleLinks(content, context) {
     return content.replace(INLINE_REFERENCE_PATTERN, (_match, rawTarget) => {

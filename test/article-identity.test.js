@@ -18,7 +18,7 @@ const {
     releaseBoundArticles,
 } = require('../scripts/release-articles');
 const { preparePull } = require('../scripts/prepare-pull');
-const { loadPublicationContext } = require('../scripts/lib/article-registry');
+const { loadPublicationContext } = require('../scripts/lib/article-registry.ts');
 const {
     compareBindingHistory,
     loadBaselineMapFromGit,

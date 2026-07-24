@@ -1,6 +1,74 @@
-const fs = require('node:fs');
-const path = require('node:path');
-const matter = require('gray-matter');
+type UnknownRecord = Record<string, unknown>;
+type ArticleId = string;
+
+interface ArticleMarker {
+    raw: string;
+    articleId: string;
+}
+
+interface InlineReference {
+    raw: string;
+    rawTarget: string;
+    articleId: ArticleId | null;
+}
+
+interface ParsedMarkdown {
+    raw: string;
+    data: UnknownRecord;
+    content: string;
+}
+
+interface ArticleMapBinding {
+    binding_state: string;
+    item_id: string;
+}
+
+interface ManifestPublicationEntry {
+    articleId: ArticleId;
+    source: string;
+    sourceBasename: string;
+    sourcePath: string;
+    articleState: string;
+    desired: string;
+}
+
+interface PublicArticle {
+    file: string;
+    basename: string;
+    filePath: string;
+    data: UnknownRecord;
+    content: string;
+}
+
+interface PublicationArticle extends ManifestPublicationEntry {
+    sourceData: UnknownRecord;
+    sourceBody: string;
+    mapEntry: ArticleMapBinding;
+    target?: PublicArticle;
+}
+
+interface PublicationContext {
+    rootDir: string;
+    prePublishDir: string;
+    publicDir: string;
+    manifestPath: string;
+    articleMapPath: string;
+    manifest: UnknownRecord;
+    articleMap: UnknownRecord;
+    qiitaUser: string;
+    articles: PublicationArticle[];
+    articlesById: Map<ArticleId, PublicationArticle>;
+    publicFiles: PublicArticle[];
+}
+
+interface LoadPublicationOptions {
+    rootDir?: string;
+    requirePublicTargets?: boolean;
+}
+
+const fs: typeof import('node:fs') = require('node:fs');
+const path: typeof import('node:path') = require('node:path');
+const matter: typeof import('gray-matter') = require('gray-matter');
 
 const ARTICLE_ID_PATTERN = /^[0-9a-f]{32}$/;
 const QIITA_ITEM_ID_PATTERN = /^[0-9a-f]{20}$/;
@@ -9,14 +77,26 @@ const SERIES_START = '<!-- START_SERIES -->';
 const SERIES_END = '<!-- END_SERIES -->';
 
 class RegistryValidationError extends Error {
-    constructor(errors) {
+    errors: string[];
+
+    constructor(errors: string[]) {
         super(`記事レジストリの検証に失敗しました:\n${errors.map((error) => `- ${error}`).join('\n')}`);
         this.name = 'RegistryValidationError';
         this.errors = errors;
     }
 }
 
-function readJsonFile(filePath, label, errors) {
+function isPlainObject(value: unknown): value is UnknownRecord {
+    return value !== null
+        && typeof value === 'object'
+        && !Array.isArray(value);
+}
+
+function readJsonFile(
+    filePath: string,
+    label: string,
+    errors: string[],
+): unknown | null {
     if (!fs.existsSync(filePath)) {
         errors.push(`${label} が見つかりません: ${filePath}`);
         return null;
@@ -25,16 +105,18 @@ function readJsonFile(filePath, label, errors) {
     try {
         return JSON.parse(fs.readFileSync(filePath, 'utf8'));
     } catch (error) {
-        errors.push(`${label} を JSON として読み込めません: ${error.message}`);
+        errors.push(
+            `${label} を JSON として読み込めません: ${(error as Error).message}`,
+        );
         return null;
     }
 }
 
-function normalizeRelativePath(value) {
+function normalizeRelativePath(value: string): string {
     return value.split(path.sep).join('/');
 }
 
-function isPathInside(parentDir, candidatePath) {
+function isPathInside(parentDir: string, candidatePath: string): boolean {
     const relativePath = path.relative(parentDir, candidatePath);
     return relativePath !== ''
         && !relativePath.startsWith(`..${path.sep}`)
@@ -42,13 +124,13 @@ function isPathInside(parentDir, candidatePath) {
         && !path.isAbsolute(relativePath);
 }
 
-function listMarkdownFiles(directoryPath) {
+function listMarkdownFiles(directoryPath: string): string[] {
     if (!fs.existsSync(directoryPath)) {
         return [];
     }
 
-    const result = [];
-    const visit = (currentDirectory) => {
+    const result: string[] = [];
+    const visit = (currentDirectory: string): void => {
         for (const entry of fs.readdirSync(currentDirectory, { withFileTypes: true })) {
             const entryPath = path.join(currentDirectory, entry.name);
             if (entry.isDirectory()) {
@@ -63,7 +145,7 @@ function listMarkdownFiles(directoryPath) {
     return result.sort((left, right) => left.localeCompare(right));
 }
 
-function getArticleMarkers(content) {
+function getArticleMarkers(content: string): ArticleMarker[] {
     const markerPattern = /<!--\s*blog-project:article-id=([^>]*?)\s*-->/g;
     return [...content.matchAll(markerPattern)].map((match) => ({
         raw: match[0],
@@ -71,11 +153,11 @@ function getArticleMarkers(content) {
     }));
 }
 
-function articleMarker(articleId) {
+function articleMarker(articleId: ArticleId): string {
     return `<!-- blog-project:article-id=${articleId} -->`;
 }
 
-function injectArticleMarker(content, articleId) {
+function injectArticleMarker(content: string, articleId: ArticleId): string {
     const markerPattern = /<!--\s*blog-project:article-id=[^>]*?\s*-->/g;
     const withoutMarkers = content
         .replace(markerPattern, '')
@@ -83,8 +165,8 @@ function injectArticleMarker(content, articleId) {
     return `${articleMarker(articleId)}\n\n${withoutMarkers}`;
 }
 
-function getInlineReferences(content) {
-    const references = [];
+function getInlineReferences(content: string): InlineReference[] {
+    const references: InlineReference[] = [];
     for (const match of content.matchAll(INLINE_REFERENCE_PATTERN)) {
         const rawTarget = match[1].trim();
         const idMatch = /^article:([0-9a-f]{32})$/.exec(rawTarget);
@@ -97,12 +179,16 @@ function getInlineReferences(content) {
     return references;
 }
 
-function parseMarkdownFile(filePath, label, errors) {
-    let raw;
+function parseMarkdownFile(
+    filePath: string,
+    label: string,
+    errors: string[],
+): ParsedMarkdown | null {
+    let raw: string;
     try {
         raw = fs.readFileSync(filePath, 'utf8');
     } catch (error) {
-        errors.push(`${label} を読み込めません: ${error.message}`);
+        errors.push(`${label} を読み込めません: ${(error as Error).message}`);
         return null;
     }
 
@@ -123,12 +209,18 @@ function parseMarkdownFile(filePath, label, errors) {
             content: parsed.content,
         };
     } catch (error) {
-        errors.push(`${label} の front matter を解析できません: ${error.message}`);
+        errors.push(
+            `${label} の front matter を解析できません: ${(error as Error).message}`,
+        );
         return null;
     }
 }
 
-function validateSourceArticle(article, publishableIds, errors) {
+function validateSourceArticle(
+    article: PublicationArticle,
+    publishableIds: ReadonlySet<ArticleId>,
+    errors: string[],
+): void {
     const { articleId, source, sourceData, sourceBody } = article;
     const label = `source(${articleId}, ${source})`;
 
@@ -218,20 +310,32 @@ function validateSourceArticle(article, publishableIds, errors) {
     }
 }
 
-function loadPublicationContext(options = {}) {
+function loadPublicationContext(
+    options: LoadPublicationOptions = {},
+): PublicationContext {
     const rootDir = path.resolve(options.rootDir || path.join(__dirname, '..', '..'));
     const requirePublicTargets = options.requirePublicTargets !== false;
     const prePublishDir = path.join(rootDir, 'pre-publish');
     const publicDir = path.join(rootDir, 'public');
     const manifestPath = path.join(prePublishDir, 'manifest.json');
     const articleMapPath = path.join(rootDir, 'article-map.json');
-    const errors = [];
+    const errors: string[] = [];
 
-    const manifest = readJsonFile(manifestPath, 'pre-publish/manifest.json', errors);
-    const articleMap = readJsonFile(articleMapPath, 'article-map.json', errors);
-    if (!manifest || !articleMap) {
+    const manifestData = readJsonFile(
+        manifestPath,
+        'pre-publish/manifest.json',
+        errors,
+    );
+    const articleMapData = readJsonFile(
+        articleMapPath,
+        'article-map.json',
+        errors,
+    );
+    if (!manifestData || !articleMapData) {
         throw new RegistryValidationError(errors);
     }
+    const manifest = manifestData as UnknownRecord;
+    const articleMap = articleMapData as UnknownRecord;
 
     if (manifest.schema_version !== 1) {
         errors.push('manifest.schema_version は 1 である必要があります');
@@ -258,22 +362,24 @@ function loadPublicationContext(options = {}) {
         throw new RegistryValidationError(errors);
     }
 
-    const manifestIds = new Set();
-    const publishableIds = new Set();
-    const manifestSources = new Map();
-    const ignoredSourceBasenames = new Set();
-    const manifestEntries = [];
+    const manifestIds = new Set<ArticleId>();
+    const publishableIds = new Set<ArticleId>();
+    const manifestSources = new Map<string, ArticleId | string>();
+    const ignoredSourceBasenames = new Set<string>();
+    const manifestEntries: ManifestPublicationEntry[] = [];
     const validArticleStates = new Set(['active', 'retiring', 'retired']);
     const validDesiredStates = new Set(['published', 'withdrawn']);
+    const manifestArticles = manifest.articles as unknown[];
 
-    manifest.articles.forEach((entry, index) => {
+    manifestArticles.forEach((entry, index) => {
         const entryLabel = `manifest.articles[${index}]`;
-        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        if (!isPlainObject(entry)) {
             errors.push(`${entryLabel} はオブジェクトである必要があります`);
             return;
         }
 
         const articleId = entry.article_id;
+        const normalizedArticleId = articleId as ArticleId;
         if (typeof articleId !== 'string' || !ARTICLE_ID_PATTERN.test(articleId)) {
             errors.push(`${entryLabel}.article_id は小文字 32hex である必要があります`);
         } else if (manifestIds.has(articleId)) {
@@ -282,13 +388,16 @@ function loadPublicationContext(options = {}) {
             manifestIds.add(articleId);
         }
 
-        if (!validArticleStates.has(entry.article_state)) {
+        if (!validArticleStates.has(entry.article_state as string)) {
             errors.push(
                 `${entryLabel}.article_state は active|retiring|retired のいずれかが必要です`,
             );
         }
 
-        const qiitaTarget = entry.targets?.qiita;
+        const targets = isPlainObject(entry.targets)
+            ? entry.targets
+            : undefined;
+        const qiitaTarget = targets?.qiita;
         if (qiitaTarget === undefined) {
             if (typeof entry.source === 'string') {
                 const ignoredBasename = path.posix.basename(entry.source);
@@ -298,11 +407,11 @@ function loadPublicationContext(options = {}) {
             }
             return;
         }
-        if (!qiitaTarget || typeof qiitaTarget !== 'object' || Array.isArray(qiitaTarget)) {
+        if (!isPlainObject(qiitaTarget)) {
             errors.push(`${entryLabel}.targets.qiita はオブジェクトである必要があります`);
             return;
         }
-        if (!validDesiredStates.has(qiitaTarget.desired)) {
+        if (!validDesiredStates.has(qiitaTarget.desired as string)) {
             errors.push(
                 `${entryLabel}.targets.qiita.desired は published|withdrawn のいずれかが必要です`,
             );
@@ -315,8 +424,8 @@ function loadPublicationContext(options = {}) {
             );
             return;
         }
-        if (ARTICLE_ID_PATTERN.test(articleId || '')) {
-            publishableIds.add(articleId);
+        if (ARTICLE_ID_PATTERN.test(normalizedArticleId || '')) {
+            publishableIds.add(normalizedArticleId);
         }
 
         const sourceMatch = typeof entry.source === 'string'
@@ -344,16 +453,19 @@ function loadPublicationContext(options = {}) {
                 + `(${manifestSources.get(sourceKey)})`,
             );
         } else {
-            manifestSources.set(sourceKey, articleId || entryLabel);
+            manifestSources.set(
+                sourceKey,
+                (normalizedArticleId || entryLabel),
+            );
         }
 
         manifestEntries.push({
-            articleId,
-            source: normalizeRelativePath(entry.source),
+            articleId: normalizedArticleId,
+            source: normalizeRelativePath(entry.source as string),
             sourceBasename,
             sourcePath,
-            articleState: entry.article_state,
-            desired: qiitaTarget.desired,
+            articleState: entry.article_state as string,
+            desired: qiitaTarget.desired as string,
         });
     });
 
@@ -371,9 +483,9 @@ function loadPublicationContext(options = {}) {
         }
     }
 
-    const mapEntries = articleMap.bindings;
+    const mapEntries = articleMap.bindings as UnknownRecord;
     const mapIds = new Set(Object.keys(mapEntries));
-    const qiitaIds = new Map();
+    const qiitaIds = new Map<string, ArticleId>();
     for (const [articleId, mapEntry] of Object.entries(mapEntries)) {
         if (!ARTICLE_ID_PATTERN.test(articleId)) {
             errors.push(`article-map のキーは小文字 32hex である必要があります: ${articleId}`);
@@ -384,7 +496,7 @@ function loadPublicationContext(options = {}) {
                 + articleId,
             );
         }
-        if (!mapEntry || typeof mapEntry !== 'object' || Array.isArray(mapEntry)) {
+        if (!isPlainObject(mapEntry)) {
             errors.push(`article-map.${articleId} はオブジェクトである必要があります`);
             continue;
         }
@@ -411,7 +523,7 @@ function loadPublicationContext(options = {}) {
         }
     }
 
-    const articles = [];
+    const articles: PublicationArticle[] = [];
     for (const entry of manifestEntries) {
         if (!ARTICLE_ID_PATTERN.test(entry.articleId) || !fs.existsSync(entry.sourcePath)) {
             continue;
@@ -428,7 +540,7 @@ function loadPublicationContext(options = {}) {
             ...entry,
             sourceData: sourceParsed.data,
             sourceBody: sourceParsed.content,
-            mapEntry: mapEntries[entry.articleId],
+            mapEntry: mapEntries[entry.articleId] as ArticleMapBinding,
         };
         articles.push(article);
     }
@@ -437,9 +549,9 @@ function loadPublicationContext(options = {}) {
         validateSourceArticle(article, publishableIds, errors);
     }
 
-    const publicFiles = [];
-    const publicByQiitaId = new Map();
-    const publicByMarker = new Map();
+    const publicFiles: PublicArticle[] = [];
+    const publicByQiitaId = new Map<string, PublicArticle[]>();
+    const publicByMarker = new Map<ArticleId, PublicArticle>();
     if (requirePublicTargets) {
         if (!fs.existsSync(publicDir) || !fs.statSync(publicDir).isDirectory()) {
             errors.push(`Qiita pull 後の public ディレクトリが見つかりません: ${publicDir}`);
@@ -453,7 +565,7 @@ function loadPublicationContext(options = {}) {
                 if (!parsed) {
                     continue;
                 }
-                const publicArticle = {
+                const publicArticle: PublicArticle = {
                     file: file.name,
                     basename: path.basename(file.name, '.md'),
                     filePath,
@@ -466,7 +578,7 @@ function loadPublicationContext(options = {}) {
                     if (!publicByQiitaId.has(parsed.data.id)) {
                         publicByQiitaId.set(parsed.data.id, []);
                     }
-                    publicByQiitaId.get(parsed.data.id).push(publicArticle);
+                    publicByQiitaId.get(parsed.data.id)!.push(publicArticle);
                 }
 
                 const markers = getArticleMarkers(parsed.content);
@@ -489,7 +601,7 @@ function loadPublicationContext(options = {}) {
                     if (publicByMarker.has(marker.articleId)) {
                         errors.push(
                             `public で article-id marker が重複しています: ${marker.articleId} `
-                            + `(${publicByMarker.get(marker.articleId).file}, ${file.name})`,
+                            + `(${publicByMarker.get(marker.articleId)!.file}, ${file.name})`,
                         );
                     } else {
                         publicByMarker.set(marker.articleId, publicArticle);
@@ -558,7 +670,9 @@ function loadPublicationContext(options = {}) {
         throw new RegistryValidationError(errors);
     }
 
-    const articlesById = new Map(articles.map((article) => [article.articleId, article]));
+    const articlesById = new Map<ArticleId, PublicationArticle>(
+        articles.map((article) => [article.articleId, article]),
+    );
     return {
         rootDir,
         prePublishDir,
@@ -567,7 +681,7 @@ function loadPublicationContext(options = {}) {
         articleMapPath,
         manifest,
         articleMap,
-        qiitaUser: articleMap.qiita_user,
+        qiitaUser: articleMap.qiita_user as string,
         articles,
         articlesById,
         publicFiles,
