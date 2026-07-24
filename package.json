@@ -8,7 +8,7 @@
     "release:bound": "node scripts/release-articles.js"
   },
   "devDependencies": {
-    "@qiita/qiita-cli": "1.6.1"
+    "@qiita/qiita-cli": "1.9.1"
   },
   "dependencies": {
     "fs-extra": "11.2.0",
