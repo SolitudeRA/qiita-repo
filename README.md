@@ -1,122 +1,156 @@
-# Qiita用記事リポジトリ
+# Qiita 发布子项目
 
-このリポジトリは、[Blog-Project](https://github.com/SolitudeRA/Blog-Project) のサブリポジトリとして、Qiita向けの記事管理および公開を効率化するために使用されます。GitHub Actionsを活用し、記事の自動更新、シリーズリンク生成、公開プロセスを自動化します。
+本仓库接收 `Blog-Project` 的文章和权威 manifest，并以稳定的
+`article_id` 更新已经绑定的 Qiita item。标题、源文件名和 `public/`
+文件名都不是文章身份。
 
----
+## 身份协议
 
-## 特徴
+`pre-publish/manifest.json` 必须是主仓库
+`articles/manifest.json` 的原样副本，不能增加 Qiita 私有字段。此子项目只读取：
 
-- **Qiita記事管理**  
-  Qiita用の記事の自動更新、シリーズリンクの生成、公開プロセスを一元管理。
+- `schema_version`
+- `articles[].article_id`
+- `source`
+- `article_state`
+- `targets.qiita.desired`
 
-- **自動化ワークフロー**  
-  GitHub Actionsを活用し、記事の解析、同期、公開を完全自動化。
+没有 `targets.qiita` 的条目会被忽略。当前发布切片只接受
+`article_state: active` 且 `targets.qiita.desired: published`。
+`retiring`、`retired` 或 `withdrawn` 会明确报错；普通发布流程不会删除、
+撤回或私密化任何文章。
 
-- **シリーズリンク生成**  
-  記事内のシリーズ情報に基づき、自動的にリンクを生成し挿入します。
+Qiita 源文件只接受以下投影：
 
----
-
-## ディレクトリ構成
-
-```
-.
-├── pre-publish/     # 公開前の記事を格納するディレクトリ
-├── public/          # Qiita上で公開する記事を格納するディレクトリ
-│   └── .remote/     # Qiitaのリモートデータを同期するディレクトリ
-├── scripts/         # 自動化スクリプト
-│   ├── parse-articles.js         # 記事を解析し、公開準備を行うスクリプト
-│   ├── generate-series-links.js  # シリーズリンクを生成するスクリプト
-│   └── sync-remote-to-public.js  # Qiitaのリモート記事をローカルに同期するスクリプト
-├── .github/         # GitHub Actions設定
-│   └── workflows/
-│       └── publish_articles.yml  # 記事公開を自動化するワークフロー
-├── qiita.config.json # Qiita CLI用の設定ファイル
-├── LICENSE          # ライセンスファイル
-└── README.md        # このファイル
+```text
+articles/share/<basename>.md -> pre-publish/<basename>.md
+articles/qiita/<basename>.md -> pre-publish/<basename>.md
 ```
 
-## 必要なセットアップ
+所有投影后的 basename 必须唯一。每个源文件的 front matter 必须包含与
+manifest 完全一致的小写 32hex `article_id`：
 
-### 1. **リポジトリのクローン**
+```yaml
+---
+article_id: 339243802597e8c42bcddfb10b5e94e3
+title: 示例标题
+tags:
+  - example
+local_updated_at: '2026-07-23T00:00:00.000Z'
+---
+```
 
-以下のコマンドでリポジトリをクローンします：
+文章间引用使用 ID，不允许标题回退：
+
+```text
+<<<article:339243802597e8c42bcddfb10b5e94e3>>>
+```
+
+生成后的正文会包含恢复标记：
+
+```html
+<!-- blog-project:article-id=339243802597e8c42bcddfb10b5e94e3 -->
+```
+
+## Qiita binding
+
+平台绑定只保存在根目录 `article-map.json`：
+
+```json
+{
+  "schema_version": 1,
+  "platform": "qiita",
+  "qiita_user": "SolitudeRA",
+  "bindings": {
+    "<article_id>": {
+      "item_id": "<20hex Qiita item id>",
+      "binding_state": "bound"
+    }
+  }
+}
+```
+
+脚本使用 `item_id` 在 `npx qiita pull` 的结果中定位目标，不按标题或文件名匹配。
+因此修改标题或源文件 basename 后仍会更新原来的 Qiita item。
+
+对于既有 binding，如果源标签和 pull 到的远端标签在规范化后是一一对应、
+集合也完全相同，构建始终会按源标签顺序保留远端现有的显示名，避免
+`server` → `Server`、`nodejs` → `Node.js` 这类仅显示形式的改写。
+标签身份使用 NFKC 和固定的 `en-US` locale 小写，并且只忽略 ASCII 的点、下划线、
+连字符和空白；日文固有标点不会被删除。任何真实新增、删除、无法匹配、空身份或规范化冲突都会
+安全回退到源标签，因此真实标签编辑仍会生效。
+
+工作流会把当前 binding 与一次 push 之前的 revision
+（`github.event.before`）比较。既有 `article_id -> item_id` 不允许修改或删除，
+`qiita_user` 也不能在普通发布中漂移；
+只有 base revision 的可达历史从未出现过 `article-map.json`，首次引入才可跳过
+比较；当前树缺失但历史出现过 map 时，会回溯最近一份 map 继续校验。新增文章在
+进入普通发布流之前，必须先人工确认 Qiita item 并增加 binding；此流程不会自动创建文章。
+
+## 安全发布流程
+
+本地验证命令：
 
 ```bash
-git clone https://github.com/SolitudeRA/qiita-repo.git
-cd qiita-repo
+npm ci
+npm test
+npm run validate:map-history -- --baseline-ref <base-revision>
+npm run prepare:pull
+npx qiita pull --force
+npm run validate
 ```
 
-### 2. **依存パッケージのインストール**
-
-Node.jsがインストールされていることを確認し、以下のコマンドを実行してください：
+`npm run build:articles` 可在临时副本中作为生成检查，因为它会改写 `public/`。
+真实发布前必须先用 `prepare:pull` 删除并重建这个纯生成目录，再执行只读的
+`npx qiita pull --force`。这既覆盖本地生成结果，也清除远端已删除或已不可见目标
+留下的陈旧文件，并会永久丢弃 `public/` 内所有本地生成物；缺失 binding 会在随后全量验证时失败。验证后应立即运行单进程
+orchestrator，在这两步之间不能再单独 build。这里的 `--force` 只用于 pull 的
+本地基线恢复，不是强制 publish。GitHub Actions 也遵循同一顺序。发布入口需要
+`QIITA_TOKEN`：
 
 ```bash
-npm install
+npm run release:bound
 ```
 
-### 3. **Qiitaトークンの生成とGitHub Secretsの設定**
+它先 snapshot 所有 pull 到的绑定目标，再 build，随后重新全量读取和验证，并严格
+核对 build 前后的 `article_id + item_id + public basename` 集合。任何验证错误或
+目标漂移都会在第一次 Qiita 写调用之前失败。`active + published` 始终生成
+`private: false`，不会继承远端的 `private: true`。
 
-#### Qiitaトークンの生成
+changed-only 比较只使用实际可发布投影：`title`、忽略顺序但精确保留显示名的 `tags`、
+`private`、`organization_url_name`、`slide` 和正文。`updated_at`、`id`、
+`ignorePublish` 与 front matter 序列化格式不参与内容 diff；`id` 仍由 binding
+和全量校验保证不能漂移。正文只把 CRLF 规范为 LF，并忽略首尾空行和终止换行，
+不会折叠内部空行。没有隐藏 `article_id` marker 的首次迁移目标会被判定为 changed；
+以后只有 `local_updated_at` 改变而发布投影不变时会跳过。纯 tag 重排也会跳过，
+因为 qiita-cli 1.6.1 自身把 tag 顺序视为无语义。规范化身份等价的显示形式编辑
+会长期保留远端显示名；当前协议不支持有意进行这类大小写、点或分隔符显示改名。
+真实新增、删除或替换 tag 身份时仍会发布。
 
-1. Qiitaの[アクセストークンページ](https://qiita.com/settings/tokens/new)にアクセスします。
-2. **"新しいアクセストークンを発行"** をクリックします。
-3. 必要なスコープを選択します：
-   - **`read_qiita`**: 記事の読み取り権限。
-   - **`write_qiita`**: 記事の作成および更新権限。
-4. トークンを生成し、コピーします（トークンは一度しか表示されませんのでご注意ください）。
+发布脚本只逐条调用：
 
-#### GitHub Secretsへの登録
+```text
+qiita publish -- <mapped-public-basename>
+```
 
-1. このリポジトリの **Settings** > **Secrets and variables** > **Actions** に移動します。
-2. **"New repository secret"** をクリックします。
-3. 以下の情報を入力します：
-   - **Name**: `QIITA_REPO_TOKEN`
-   - **Secret**: 生成したQiitaトークンを貼り付けます。
-4. 保存をクリックします。
+正常入口只对 changed targets 调用，不使用 `publish --all`、`--force`，也没有
+删除或撤回步骤。`publishPlanned` 仍作为可注入的底层兼容函数导出，但不再暴露为
+`npm` 发布命令，也不被 workflow 使用。
 
----
+## 自动化顺序
 
-### 4. **GitHub Actionsのリポジトリ権限の設定**
+GitHub Actions 使用只读仓库权限并执行：
 
-GitHub Actionsがリポジトリに変更をプッシュできるようにするため、リポジトリの書き込み権限を付与する必要があります。
+1. `npm ci`
+2. `npm test`
+3. 对比 `github.event.before` 验证 binding 不可变
+4. 清空纯生成的 `public/`，再用 `npx qiita pull --force` 恢复确定的只读远端基线
+5. 全量 preflight
+6. 单进程 snapshot、生成 ID marker/系列链接/ID 引用，再全量重验
+7. 仅逐条发布可发布投影发生变化的明确绑定目标
 
-1. **Settings** > **Actions** > **General** に移動します。
-2. **Workflow permissions** のセクションで、以下を選択します：
-   - **"Read and write permissions"**
-3. **Save** をクリックして設定を保存します。
+测试通过注入 runner 验证发布计划，不会调用真实 Qiita 写接口。
 
-## ワークフローの概要
+## License
 
-以下は、このリポジトリで実行されるGitHub Actionsの処理の流れです：
-
-1. **Qiitaリモート記事をローカルに同期**  
-   Qiitaから既存の記事を取得し、ローカルの `public/.remote` ディレクトリに同期。
-
-2. **記事の解析**  
-   `pre-publish` 内の記事を解析し、Qiitaで公開可能な形式に変換。
-
-3. **シリーズリンクの生成**  
-   記事の `series` メタデータに基づいてシリーズリンクを生成し、記事に挿入。
-
-4. **記事の公開**  
-   `npx qiita publish` コマンドを利用して記事をQiitaに公開。
-
-5. **再同期と再公開**  
-   記事公開後、Qiita上の更新を再取得し、リンクの整合性を確認したうえで再公開。
-
----
-
-## 使用方法
-
-1. 自動的にメインリポジトリ`blog-project` から記事の追加または更新のコミットを受け。
-2. GitHub Actions が自動的に以下の処理を実行します：
-   - 記事の `local_updated_at` の自動更新。
-   - 記事の解析とリンク生成。
-   - Qiita リポジトリへの公開。
-
----
-
-## ライセンス
-
-このリポジトリは [MITライセンス](LICENSE) のもとで公開されています。
+[MIT](LICENSE)

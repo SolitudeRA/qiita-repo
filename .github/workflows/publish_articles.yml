@@ -4,12 +4,21 @@ on:
   push:
     branches:
       - main
+    paths:
+      - ".github/workflows/publish_articles.yml"
+      - "article-map.json"
+      - "package.json"
+      - "package-lock.json"
+      - "pre-publish/**"
+      - "qiita.config.json"
+      - "scripts/**"
+      - "test/**"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: qiita-publish-main
   cancel-in-progress: false
 
 jobs:
@@ -28,34 +37,28 @@ jobs:
           node-version: "22.11.0"
 
       - name: Install Dependencies
-        run: npm install gray-matter fs-extra @qiita/qiita-cli
+        run: npm ci
 
-      - name: Set Qiita Token
-        run: echo "QIITA_TOKEN=${{ secrets.QIITA_REPO_TOKEN }}" >> $GITHUB_ENV
+      - name: Run Tests
+        run: npm test
 
-      - name: Pull from Qiita
-        run: npx qiita pull
+      - name: Validate Immutable Bindings
+        env:
+          BASELINE_REF: ${{ github.event.before }}
+        run: npm run validate:map-history -- --baseline-ref "$BASELINE_REF"
 
-      - name: Sync remote to local
-        run: node scripts/sync-remote-to-public.js
+      - name: Prepare Clean Pull Baseline
+        run: npm run prepare:pull
 
-      - name: Parse Articles
-        run: node scripts/parse-articles.js
+      - name: Pull Bound Targets from Qiita
+        env:
+          QIITA_TOKEN: ${{ secrets.QIITA_REPO_TOKEN }}
+        run: npx qiita pull --force
 
-      - name: Generate Series Links
-        run: node scripts/generate-series-links.js ./pre-publish ./public
+      - name: Validate Manifest, Sources, Map, and Pulled Targets
+        run: npm run validate
 
-      - name: Publish to Qiita (First Pass)
-        run: npx qiita publish --all --force
-
-      - name: Pull from Qiita
-        run: npx qiita pull
-
-      - name: Sync remote to local
-        run: node scripts/sync-remote-to-public.js
-
-      - name: Generate Series Links
-        run: node scripts/generate-series-links.js ./pre-publish ./public
-
-      - name: Publish to Qiita (Second Pass)
-        run: npx qiita publish --all --force
+      - name: Build, Diff, and Publish Changed Bound Targets
+        env:
+          QIITA_TOKEN: ${{ secrets.QIITA_REPO_TOKEN }}
+        run: npm run release:bound

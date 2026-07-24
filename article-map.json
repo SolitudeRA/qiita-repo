@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "platform": "qiita",
+  "qiita_user": "SolitudeRA",
+  "bindings": {
+    "08828ec8b0719d4ae2ae640a6dd4867d": {
+      "item_id": "aecc62f0bb4270367656",
+      "binding_state": "bound"
+    },
+    "339243802597e8c42bcddfb10b5e94e3": {
+      "item_id": "4c6196234446c5965f23",
+      "binding_state": "bound"
+    },
+    "3b5bc7d9db757f0a093e390589a90090": {
+      "item_id": "9626951e8d8558ef2616",
+      "binding_state": "bound"
+    },
+    "486d1bcca039ee9a86c874e92e62b8e2": {
+      "item_id": "d7274b1c05b4006b3578",
+      "binding_state": "bound"
+    },
+    "546e23531bd92a74006cab2ad7627c92": {
+      "item_id": "652c84442abfd818f743",
+      "binding_state": "bound"
+    },
+    "63fd8b974d61b06c392d115fbaed72dc": {
+      "item_id": "0a3f810efb315ba04fd2",
+      "binding_state": "bound"
+    },
+    "6ca25021e26b78a81bb4c1f662916c3f": {
+      "item_id": "78ed880f4fa89d466c1f",
+      "binding_state": "bound"
+    },
+    "7e77279a72a8402b18d4165646b34eab": {
+      "item_id": "a42e5e102932d84d82e3",
+      "binding_state": "bound"
+    },
+    "895c8f601bd9217913d1a253512a97a9": {
+      "item_id": "8580cffbb7de7148366a",
+      "binding_state": "bound"
+    },
+    "e908faa15ad46dc89cb87bf2d5b5908c": {
+      "item_id": "ce9e9dadf46e19143656",
+      "binding_state": "bound"
+    },
+    "f066c34618ef9a6b76ffd6b48f47687c": {
+      "item_id": "f41e730e87181076d707",
+      "binding_state": "bound"
+    }
+  }
+}
