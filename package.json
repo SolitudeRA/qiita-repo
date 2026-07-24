@@ -1,4 +1,7 @@
 {
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "test": "node --test --experimental-test-isolation=none test/article-identity.test.js",
     "validate": "node scripts/validate-articles.js",
@@ -11,7 +14,7 @@
     "@qiita/qiita-cli": "1.9.1"
   },
   "dependencies": {
-    "fs-extra": "11.2.0",
+    "fs-extra": "11.4.0",
     "gray-matter": "4.0.3"
   }
 }
