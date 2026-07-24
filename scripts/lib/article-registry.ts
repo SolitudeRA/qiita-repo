@@ -154,25 +154,85 @@ function isPathInside(parentDir: string, candidatePath: string): boolean {
         && !path.isAbsolute(relativePath);
 }
 
-function listMarkdownFiles(directoryPath: string): string[] {
+interface PrePublishTree {
+    manifestIsRegularFile: boolean;
+    markdownFiles: string[];
+}
+
+function inspectPrePublishTree(
+    directoryPath: string,
+    manifestPath: string,
+    errors: string[],
+): PrePublishTree {
+    const result: PrePublishTree = {
+        manifestIsRegularFile: false,
+        markdownFiles: [],
+    };
     if (!fs.existsSync(directoryPath)) {
-        return [];
+        errors.push(`pre-publish/manifest.json が見つかりません: ${manifestPath}`);
+        return result;
     }
 
-    const result: string[] = [];
-    const visit = (currentDirectory: string): void => {
-        for (const entry of fs.readdirSync(currentDirectory, { withFileTypes: true })) {
-            const entryPath = path.join(currentDirectory, entry.name);
-            if (entry.isDirectory()) {
-                visit(entryPath);
-            } else if (entry.isFile() && entry.name.endsWith('.md')) {
-                result.push(normalizeRelativePath(path.relative(directoryPath, entryPath)));
-            }
-        }
-    };
+    let directoryStat: import('node:fs').Stats;
+    try {
+        directoryStat = fs.lstatSync(directoryPath);
+    } catch (error) {
+        errors.push(
+            `pre-publish を検査できません: ${(error as Error).message}`,
+        );
+        return result;
+    }
+    if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) {
+        errors.push(
+            `pre-publish は通常のディレクトリである必要があります: ${directoryPath}`,
+        );
+        return result;
+    }
 
-    visit(directoryPath);
-    return result.sort((left, right) => left.localeCompare(right));
+    const manifestName = path.basename(manifestPath);
+    let manifestFound = false;
+    let entries: import('node:fs').Dirent[];
+    try {
+        entries = fs.readdirSync(directoryPath, { withFileTypes: true });
+    } catch (error) {
+        errors.push(
+            `pre-publish を読み取れません: ${(error as Error).message}`,
+        );
+        return result;
+    }
+    for (const entry of entries) {
+        if (entry.name === manifestName) {
+            manifestFound = true;
+            if (entry.isFile()) {
+                result.manifestIsRegularFile = true;
+            } else {
+                errors.push(
+                    `pre-publish/${entry.name} は通常ファイルである必要があります`,
+                );
+            }
+            continue;
+        }
+
+        if (entry.isDirectory() || entry.isSymbolicLink() || !entry.isFile()) {
+            errors.push(
+                `pre-publish/${entry.name}: pre-publish 直下には通常ファイルだけを`
+                + '配置してください',
+            );
+        } else if (!entry.name.endsWith('.md')) {
+            errors.push(
+                `pre-publish/${entry.name}: pre-publish には manifest.json と`
+                + '.md 記事だけを配置してください',
+            );
+        } else {
+            result.markdownFiles.push(entry.name);
+        }
+    }
+
+    if (!manifestFound) {
+        errors.push(`pre-publish/manifest.json が見つかりません: ${manifestPath}`);
+    }
+    result.markdownFiles.sort((left, right) => left.localeCompare(right));
+    return result;
 }
 
 function getArticleMarkers(content: string): ArticleMarker[] {
@@ -356,12 +416,19 @@ function loadPublicationContext(
     const manifestPath = path.join(prePublishDir, 'manifest.json');
     const articleMapPath = path.join(rootDir, 'article-map.json');
     const errors: string[] = [];
-
-    const manifestData = readJsonFile(
+    const prePublishTree = inspectPrePublishTree(
+        prePublishDir,
         manifestPath,
-        'pre-publish/manifest.json',
         errors,
     );
+
+    const manifestData = prePublishTree.manifestIsRegularFile
+        ? readJsonFile(
+            manifestPath,
+            'pre-publish/manifest.json',
+            errors,
+        )
+        : null;
     const articleMapData = readJsonFile(
         articleMapPath,
         'article-map.json',
@@ -505,7 +572,7 @@ function loadPublicationContext(
         });
     });
 
-    const actualSources = listMarkdownFiles(prePublishDir);
+    const actualSources = prePublishTree.markdownFiles;
     for (const actualSource of actualSources) {
         const actualSourceKey = actualSource.toLowerCase();
         if (!manifestSources.has(actualSourceKey)

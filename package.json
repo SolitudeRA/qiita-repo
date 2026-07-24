@@ -1,9 +1,13 @@
 {
+  "name": "qiita-repo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
   "engines": {
     "node": ">=24"
   },
   "scripts": {
-    "test": "node --test --experimental-test-isolation=none test/article-identity.test.ts",
+    "test": "node --test test/article-identity.test.ts",
     "validate": "node scripts/validate-articles.ts",
     "validate:map-history": "node scripts/validate-map-history.ts",
     "prepare:pull": "node scripts/prepare-pull.ts",

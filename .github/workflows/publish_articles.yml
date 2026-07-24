@@ -1,11 +1,15 @@
 name: Publish Articles to Qiita
 
 on:
+  pull_request:
+    branches:
+      - main
   push:
     branches:
       - main
     paths:
       - ".github/workflows/publish_articles.yml"
+      - ".node-version"
       - "article-map.json"
       - "package.json"
       - "package-lock.json"
@@ -13,16 +17,17 @@ on:
       - "qiita.config.json"
       - "scripts/**"
       - "test/**"
+      - "tsconfig.json"
 
 permissions:
   contents: read
 
 concurrency:
-  group: qiita-publish-main
-  cancel-in-progress: false
+  group: qiita-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  publish_articles:
+  validate_and_publish:
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -34,7 +39,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: "24.18.0"
+          node-version-file: ".node-version"
           package-manager-cache: false
 
       - name: Install Dependencies
@@ -48,21 +53,25 @@ jobs:
 
       - name: Validate Immutable Bindings
         env:
-          BASELINE_REF: ${{ github.event.before }}
+          BASELINE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
         run: npm run validate:map-history -- --baseline-ref "$BASELINE_REF"
 
       - name: Prepare Clean Pull Baseline
+        if: github.event_name == 'push'
         run: npm run prepare:pull
 
       - name: Pull Bound Targets from Qiita
+        if: github.event_name == 'push'
         env:
           QIITA_TOKEN: ${{ secrets.QIITA_REPO_TOKEN }}
-        run: npx qiita pull --force
+        run: npx --no-install qiita pull --force
 
       - name: Validate Manifest, Sources, Map, and Pulled Targets
+        if: github.event_name == 'push'
         run: npm run validate
 
       - name: Build, Diff, and Publish Changed Bound Targets
+        if: github.event_name == 'push'
         env:
           QIITA_TOKEN: ${{ secrets.QIITA_REPO_TOKEN }}
         run: npm run release:bound
