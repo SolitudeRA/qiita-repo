@@ -1,15 +1,73 @@
-const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+import type {
+    ArticleMapBinding,
+    ArticleRegistryExports,
+    PublicationContext,
+    RootDirOptions,
+    UnknownRecord,
+} from './lib/article-registry.ts';
+
+const fs: typeof import('node:fs') = require('node:fs');
+const os: typeof import('node:os') = require('node:os');
+const path: typeof import('node:path') = require('node:path');
+const { spawnSync }: typeof import('node:child_process') = require('node:child_process');
 const {
     ARTICLE_ID_PATTERN,
     QIITA_ITEM_ID_PATTERN,
     RegistryValidationError,
     loadPublicationContext,
-} = require('./lib/article-registry.ts');
+} = require('./lib/article-registry.ts') as ArticleRegistryExports;
 
-function defaultGitRunner(rootDir, args) {
+export interface GitRunnerResult {
+    error?: Error;
+    signal?: NodeJS.Signals | null;
+    status: number | null;
+    stdout: string;
+    stderr: string;
+}
+
+export type GitRunner = (rootDir: string, args: string[]) => GitRunnerResult;
+
+interface HistoricalBinding extends UnknownRecord {
+    binding_state: string;
+    item_id: string;
+}
+
+interface HistoricalArticleMap extends UnknownRecord {
+    schema_version: 1;
+    platform: 'qiita';
+    qiita_user: string;
+    bindings: Record<string, HistoricalBinding>;
+}
+
+export interface BindingHistoryComparison {
+    checkedBindings: number;
+    initialIntroduction: boolean;
+}
+
+interface LoadBaselineMapOptions {
+    rootDir: string;
+    baselineRef: string;
+    gitRunner?: GitRunner;
+}
+
+interface ValidateBindingHistoryOptions extends RootDirOptions {
+    baselineRef?: string;
+    baselineMap?: unknown;
+    gitRunner?: GitRunner;
+}
+
+export interface BindingHistoryResult extends BindingHistoryComparison {
+    context: PublicationContext;
+    baselineRef: string;
+}
+
+function isPlainObject(value: unknown): value is UnknownRecord {
+    return value !== null
+        && typeof value === 'object'
+        && !Array.isArray(value);
+}
+
+function defaultGitRunner(rootDir: string, args: string[]): GitRunnerResult {
     // Codex の Windows sandbox では child process の pipe capture が
     // EPERM になるため、専用一時ファイルの fd を使って同じ出力を捕捉する。
     const captureDir = fs.mkdtempSync(
@@ -17,8 +75,8 @@ function defaultGitRunner(rootDir, args) {
     );
     const stdoutPath = path.join(captureDir, 'stdout');
     const stderrPath = path.join(captureDir, 'stderr');
-    let stdoutFd;
-    let stderrFd;
+    let stdoutFd: number | undefined;
+    let stderrFd: number | undefined;
 
     try {
         stdoutFd = fs.openSync(stdoutPath, 'wx');
@@ -51,7 +109,7 @@ function defaultGitRunner(rootDir, args) {
     }
 }
 
-function assertGitSuccess(result, operation) {
+function assertGitSuccess(result: GitRunnerResult, operation: string): void {
     if (result.error) {
         throw new Error(`${operation} を実行できません: ${result.error.message}`);
     }
@@ -61,7 +119,9 @@ function assertGitSuccess(result, operation) {
     }
 }
 
-function loadBaselineMapFromGit(options) {
+function loadBaselineMapFromGit(
+    options: LoadBaselineMapOptions,
+): unknown | null {
     const {
         rootDir,
         baselineRef,
@@ -132,37 +192,43 @@ function loadBaselineMapFromGit(options) {
     try {
         return JSON.parse(showResult.stdout);
     } catch (error) {
-        throw new Error(`baseline map を JSON として解析できません: ${error.message}`);
+        throw new Error(
+            `baseline map を JSON として解析できません: `
+            + (error instanceof Error ? error.message : String(error)),
+        );
     }
 }
 
-function validateBaselineMapShape(baselineMap, errors) {
-    if (baselineMap.schema_version !== 1
+function validateBaselineMapShape(
+    baselineMap: unknown,
+    errors: string[],
+): baselineMap is HistoricalArticleMap {
+    if (!isPlainObject(baselineMap)
+        || baselineMap.schema_version !== 1
         || baselineMap.platform !== 'qiita'
         || typeof baselineMap.qiita_user !== 'string'
         || !/^[A-Za-z0-9_-]+$/.test(baselineMap.qiita_user)
-        || !baselineMap.bindings
-        || typeof baselineMap.bindings !== 'object'
-        || Array.isArray(baselineMap.bindings)) {
+        || !isPlainObject(baselineMap.bindings)) {
         errors.push('baseline article-map.json のスキーマが不正です');
         return false;
     }
 
-    const itemIds = new Set();
+    const itemIds = new Set<string>();
     for (const [articleId, binding] of Object.entries(baselineMap.bindings)) {
         if (!ARTICLE_ID_PATTERN.test(articleId)) {
             errors.push(`baseline map の article_id が不正です: ${articleId}`);
         }
-        if (!binding || typeof binding !== 'object' || Array.isArray(binding)) {
+        if (!isPlainObject(binding)) {
             errors.push(`baseline map の binding が不正です: ${articleId}`);
             continue;
         }
-        if (!QIITA_ITEM_ID_PATTERN.test(binding.item_id || '')) {
+        const itemId = binding.item_id;
+        if (typeof itemId !== 'string' || !QIITA_ITEM_ID_PATTERN.test(itemId)) {
             errors.push(`baseline map の item_id が不正です: ${articleId}`);
-        } else if (itemIds.has(binding.item_id)) {
-            errors.push(`baseline map の item_id が重複しています: ${binding.item_id}`);
+        } else if (itemIds.has(itemId)) {
+            errors.push(`baseline map の item_id が重複しています: ${itemId}`);
         } else {
-            itemIds.add(binding.item_id);
+            itemIds.add(itemId);
         }
         if (binding.binding_state !== 'bound') {
             errors.push(`baseline map の binding_state が不正です: ${articleId}`);
@@ -171,24 +237,29 @@ function validateBaselineMapShape(baselineMap, errors) {
     return errors.length === 0;
 }
 
-function compareBindingHistory(currentMap, baselineMap) {
+function compareBindingHistory(
+    currentMap: UnknownRecord,
+    baselineMap: unknown | null,
+): BindingHistoryComparison {
     if (baselineMap === null) {
         return { checkedBindings: 0, initialIntroduction: true };
     }
 
-    const errors = [];
+    const errors: string[] = [];
     if (!validateBaselineMapShape(baselineMap, errors)) {
         throw new RegistryValidationError(errors);
     }
-    if (currentMap.qiita_user !== baselineMap.qiita_user) {
+    const currentQiitaUser = currentMap.qiita_user as string;
+    const currentBindings = currentMap.bindings as Record<string, ArticleMapBinding>;
+    if (currentQiitaUser !== baselineMap.qiita_user) {
         errors.push(
             `article-map.qiita_user の変更は禁止されています: `
-            + `${baselineMap.qiita_user} -> ${currentMap.qiita_user}`,
+            + `${baselineMap.qiita_user} -> ${currentQiitaUser}`,
         );
     }
 
     for (const [articleId, oldBinding] of Object.entries(baselineMap.bindings)) {
-        const currentBinding = currentMap.bindings[articleId];
+        const currentBinding = currentBindings[articleId];
         if (!currentBinding) {
             errors.push(
                 `既存 binding の削除は禁止されています: ${articleId} -> ${oldBinding.item_id}`,
@@ -212,7 +283,9 @@ function compareBindingHistory(currentMap, baselineMap) {
     };
 }
 
-function validateBindingHistory(options = {}) {
+function validateBindingHistory(
+    options: ValidateBindingHistoryOptions = {},
+): BindingHistoryResult {
     const rootDir = path.resolve(options.rootDir || path.join(__dirname, '..'));
     const context = loadPublicationContext({ rootDir, requirePublicTargets: false });
     const baselineRef = options.baselineRef || 'HEAD^';
@@ -230,7 +303,7 @@ function validateBindingHistory(options = {}) {
     };
 }
 
-function parseCliArgs(args) {
+function parseCliArgs(args: string[]): { baselineRef: string } {
     const optionIndex = args.indexOf('--baseline-ref');
     if (optionIndex === -1) {
         return { baselineRef: 'HEAD^' };
@@ -240,9 +313,15 @@ function parseCliArgs(args) {
         throw new Error('--baseline-ref には Git commit/ref が必要です');
     }
     if (args.length !== 2 || optionIndex !== 0) {
-        throw new Error('使用方法: node scripts/validate-map-history.js [--baseline-ref <ref>]');
+        throw new Error('使用方法: node scripts/validate-map-history.ts [--baseline-ref <ref>]');
     }
     return { baselineRef };
+}
+
+export interface ValidateMapHistoryExports {
+    compareBindingHistory: typeof compareBindingHistory;
+    loadBaselineMapFromGit: typeof loadBaselineMapFromGit;
+    validateBindingHistory: typeof validateBindingHistory;
 }
 
 module.exports = {
@@ -266,7 +345,7 @@ if (require.main === module) {
             );
         }
     } catch (error) {
-        console.error(error.message);
+        console.error(error instanceof Error ? error.message : String(error));
         process.exitCode = 1;
     }
 }

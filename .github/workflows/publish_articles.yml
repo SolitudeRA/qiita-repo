@@ -40,7 +40,7 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
-      - name: Type-check migrated TypeScript
+      - name: Type-check TypeScript
         run: npm run typecheck
 
       - name: Run Tests

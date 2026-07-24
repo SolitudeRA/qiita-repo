@@ -3,13 +3,13 @@
     "node": ">=24"
   },
   "scripts": {
-    "test": "node --test --experimental-test-isolation=none test/article-identity.test.js",
-    "validate": "node scripts/validate-articles.js",
-    "validate:map-history": "node scripts/validate-map-history.js",
-    "prepare:pull": "node scripts/prepare-pull.js",
-    "build:articles": "node scripts/build-articles.js",
-    "release:bound": "node scripts/release-articles.js",
-    "typecheck": "tsc --noEmit --project tsconfig.strict.json"
+    "test": "node --test --experimental-test-isolation=none test/article-identity.test.ts",
+    "validate": "node scripts/validate-articles.ts",
+    "validate:map-history": "node scripts/validate-map-history.ts",
+    "prepare:pull": "node scripts/prepare-pull.ts",
+    "build:articles": "node scripts/build-articles.ts",
+    "release:bound": "node scripts/release-articles.ts",
+    "typecheck": "tsc --noEmit --project tsconfig.json"
   },
   "devDependencies": {
     "@qiita/qiita-cli": "1.9.1",

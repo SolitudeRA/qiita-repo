@@ -1,29 +1,66 @@
-const assert = require('node:assert/strict');
-const { spawnSync } = require('node:child_process');
-const fs = require('node:fs');
-const path = require('node:path');
-const test = require('node:test');
-const matter = require('gray-matter');
-const { buildArticles } = require('../scripts/build-articles');
+import type { BuildArticlesExports } from '../scripts/build-articles.ts';
+import type { GenerateSeriesLinksExports } from '../scripts/generate-series-links.ts';
+import type {
+    ArticleRegistryExports,
+    PublicationArticleWithTarget,
+    PublicArticleData,
+    UnknownRecord,
+} from '../scripts/lib/article-registry.ts';
+import type { ParseArticlesExports } from '../scripts/parse-articles.ts';
+import type {
+    PublishArticlesExports,
+    PublishRunner,
+    PublishTarget,
+} from '../scripts/publish-articles.ts';
+import type { PreparePullExports } from '../scripts/prepare-pull.ts';
+import type { ReleaseArticlesExports } from '../scripts/release-articles.ts';
+import type {
+    GitRunner,
+    ValidateMapHistoryExports,
+} from '../scripts/validate-map-history.ts';
+import type {
+    Fixture,
+    FixtureOptions,
+    TestHelpersExports,
+} from './helpers.ts';
+
+const assert: typeof import('node:assert/strict') = require('node:assert/strict');
+const { spawnSync }: typeof import('node:child_process') = require('node:child_process');
+const fs: typeof import('node:fs') = require('node:fs');
+const os: typeof import('node:os') = require('node:os');
+const path: typeof import('node:path') = require('node:path');
+const test: typeof import('node:test') = require('node:test');
+const matter: typeof import('gray-matter') = require('gray-matter');
+const {
+    buildArticles,
+} = require('../scripts/build-articles.ts') as BuildArticlesExports;
 const {
     planPublicArticles,
     selectBoundTargetTags,
     writePublicArticles,
-} = require('../scripts/parse-articles');
-const { writeSeriesLinks } = require('../scripts/generate-series-links');
-const { publishPlanned } = require('../scripts/publish-articles');
+} = require('../scripts/parse-articles.ts') as ParseArticlesExports;
+const {
+    writeSeriesLinks,
+} = require('../scripts/generate-series-links.ts') as GenerateSeriesLinksExports;
+const {
+    publishPlanned,
+} = require('../scripts/publish-articles.ts') as PublishArticlesExports;
 const {
     createPublishProjection,
     normalizePublishBody,
     releaseBoundArticles,
-} = require('../scripts/release-articles');
-const { preparePull } = require('../scripts/prepare-pull');
-const { loadPublicationContext } = require('../scripts/lib/article-registry.ts');
+} = require('../scripts/release-articles.ts') as ReleaseArticlesExports;
+const {
+    preparePull,
+} = require('../scripts/prepare-pull.ts') as PreparePullExports;
+const {
+    loadPublicationContext,
+} = require('../scripts/lib/article-registry.ts') as ArticleRegistryExports;
 const {
     compareBindingHistory,
     loadBaselineMapFromGit,
     validateBindingHistory,
-} = require('../scripts/validate-map-history');
+} = require('../scripts/validate-map-history.ts') as ValidateMapHistoryExports;
 const {
     ARTICLE_A,
     ARTICLE_B,
@@ -31,9 +68,27 @@ const {
     ITEM_B,
     createFixture,
     sourceMarkdown,
-} = require('./helpers');
+} = require('./helpers.ts') as TestHelpersExports;
 
-function withFixture(options, callback) {
+type PublishCall = {
+    basename: string;
+    target: PublishTarget;
+};
+
+type PublishRunnerArguments = Parameters<PublishRunner>;
+
+function describeError(error: unknown): string {
+    if (!(error instanceof Error)) {
+        return String(error);
+    }
+    const code = (error as NodeJS.ErrnoException).code;
+    return code || error.message;
+}
+
+function withFixture<T>(
+    options: FixtureOptions,
+    callback: (fixture: Fixture) => T,
+): T {
     const fixture = createFixture(options);
     try {
         return callback(fixture);
@@ -42,7 +97,7 @@ function withFixture(options, callback) {
     }
 }
 
-function runGitQuiet(rootDir, args) {
+function runGitQuiet(rootDir: string, args: string[]): void {
     const result = spawnSync('git', args, {
         cwd: rootDir,
         shell: false,
@@ -200,7 +255,7 @@ test('tag matching keeps Japanese punctuation significant', () => {
 
 test('the checked-in 11-article corpus builds end-to-end against pulled targets', () => {
     const repositoryRoot = path.join(__dirname, '..');
-    const rootDir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'qiita-corpus-'));
+    const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qiita-corpus-'));
     try {
         fs.cpSync(
             path.join(repositoryRoot, 'pre-publish'),
@@ -297,6 +352,7 @@ test('title and source-path rename retain the same mapped Qiita target', () => {
 
         const plan = planPublicArticles({ rootDir });
         const alphaWrite = plan.writes.find((write) => write.articleId === ARTICLE_A);
+        assert.ok(alphaWrite);
         assert.equal(alphaWrite.itemId, ITEM_A);
         assert.equal(alphaWrite.targetFile, 'remote-alpha.md');
 
@@ -503,7 +559,7 @@ test('historical bindings are immutable while initial map introduction is allowe
 
 test('Git baseline loading only allows a missing map and fails closed otherwise', () => {
     const rootDir = process.cwd();
-    const missingMapRunner = (_runnerRoot, args) => {
+    const missingMapRunner: GitRunner = (_runnerRoot, args) => {
         if (args[0] === 'cat-file' && args[2]?.endsWith('^{commit}')) {
             return { status: 0, stdout: '', stderr: '' };
         }
@@ -531,7 +587,7 @@ test('Git baseline loading only allows a missing map and fails closed otherwise'
         /baseline commit .* に失敗しました/,
     );
 
-    const malformedRunner = (_runnerRoot, args) => {
+    const malformedRunner: GitRunner = (_runnerRoot, args) => {
         if (args[0] === 'show') {
             return { status: 0, stdout: '{not-json', stderr: '' };
         }
@@ -549,7 +605,7 @@ test('Git baseline loading only allows a missing map and fails closed otherwise'
         /baseline map を JSON として解析できません/,
     );
 
-    const treeErrorRunner = (_runnerRoot, args) => {
+    const treeErrorRunner: GitRunner = (_runnerRoot, args) => {
         if (args[0] === 'cat-file') {
             return { status: 0, stdout: '', stderr: '' };
         }
@@ -634,7 +690,7 @@ test('retiring, retired, and withdrawn lifecycle requests are explicitly unsuppo
 
 test('publishing invokes only mapped basenames and never an all/force path', () => {
     withFixture({}, ({ rootDir }) => {
-        const calls = [];
+        const calls: PublishCall[] = [];
         const result = publishPlanned({
             rootDir,
             runner: (_runnerRoot, basename, target) => {
@@ -659,7 +715,7 @@ test('publishing invokes only mapped basenames and never an all/force path', () 
 });
 
 test('pull preparation removes only the generated public directory', () => {
-    const rootDir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'qiita-reset-'));
+    const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qiita-reset-'));
     try {
         const publicDir = path.join(rootDir, 'public');
         fs.mkdirSync(path.join(publicDir, '.remote'), { recursive: true });
@@ -684,9 +740,9 @@ test('pull preparation removes only the generated public directory', () => {
 });
 
 test('pull preparation rejects a public symlink escaping the repository', (t) => {
-    const rootDir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'qiita-link-root-'));
+    const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qiita-link-root-'));
     const outsideDir = fs.mkdtempSync(
-        path.join(require('node:os').tmpdir(), 'qiita-link-outside-'),
+        path.join(os.tmpdir(), 'qiita-link-outside-'),
     );
     const publicPath = path.join(rootDir, 'public');
     const sentinelPath = path.join(outsideDir, 'sentinel.txt');
@@ -699,7 +755,7 @@ test('pull preparation rejects a public symlink escaping the repository', (t) =>
                 process.platform === 'win32' ? 'junction' : 'dir',
             );
         } catch (error) {
-            t.skip(`symlink creation is unavailable: ${error.code || error.message}`);
+            t.skip(`symlink creation is unavailable: ${describeError(error)}`);
             return;
         }
 
@@ -719,10 +775,10 @@ test('pull preparation rejects a public symlink escaping the repository', (t) =>
 
 test('pull preparation rejects a symlink inside public', (t) => {
     const rootDir = fs.mkdtempSync(
-        path.join(require('node:os').tmpdir(), 'qiita-inner-link-root-'),
+        path.join(os.tmpdir(), 'qiita-inner-link-root-'),
     );
     const outsideDir = fs.mkdtempSync(
-        path.join(require('node:os').tmpdir(), 'qiita-inner-link-outside-'),
+        path.join(os.tmpdir(), 'qiita-inner-link-outside-'),
     );
     const publicDir = path.join(rootDir, 'public');
     const remotePath = path.join(publicDir, '.remote');
@@ -737,7 +793,7 @@ test('pull preparation rejects a symlink inside public', (t) => {
                 process.platform === 'win32' ? 'junction' : 'dir',
             );
         } catch (error) {
-            t.skip(`symlink creation is unavailable: ${error.code || error.message}`);
+            t.skip(`symlink creation is unavailable: ${describeError(error)}`);
             return;
         }
 
@@ -756,7 +812,7 @@ test('pull preparation rejects a symlink inside public', (t) => {
 });
 
 test('pull preparation rejects a non-directory public path', () => {
-    const rootDir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'qiita-file-root-'));
+    const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qiita-file-root-'));
     const publicPath = path.join(rootDir, 'public');
     try {
         fs.writeFileSync(publicPath, 'do not delete\n', 'utf8');
@@ -772,7 +828,7 @@ test('pull preparation rejects a non-directory public path', () => {
 
 test('pull preparation rejects unexpected entries inside public', () => {
     const rootDir = fs.mkdtempSync(
-        path.join(require('node:os').tmpdir(), 'qiita-unexpected-root-'),
+        path.join(os.tmpdir(), 'qiita-unexpected-root-'),
     );
     const publicDir = path.join(rootDir, 'public');
     try {
@@ -793,7 +849,7 @@ test('pull preparation rejects unexpected entries inside public', () => {
 
 test('first bound release publishes all 11 pulled targets without identity markers', () => {
     const repositoryRoot = path.join(__dirname, '..');
-    const rootDir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'qiita-release-'));
+    const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qiita-release-'));
     try {
         fs.cpSync(
             path.join(repositoryRoot, 'pre-publish'),
@@ -827,7 +883,7 @@ test('first bound release publishes all 11 pulled targets without identity marke
             );
         }
 
-        const calls = [];
+        const calls: PublishCall[] = [];
         const result = releaseBoundArticles({
             rootDir,
             runner: (_runnerRoot, basename, target) => {
@@ -855,7 +911,7 @@ test('a built target with only local_updated_at changed publishes nothing', () =
             'utf8',
         );
 
-        const calls = [];
+        const calls: PublishRunnerArguments[] = [];
         const result = releaseBoundArticles({
             rootDir,
             runner: (...args) => calls.push(args),
@@ -892,7 +948,7 @@ test('Qiita-collapsed redundant blank lines publish nothing', () => {
             'utf8',
         );
 
-        const calls = [];
+        const calls: PublishRunnerArguments[] = [];
         const result = releaseBoundArticles({
             rootDir,
             runner: (...args) => calls.push(args),
@@ -922,7 +978,7 @@ test('a pure tag reorder publishes nothing', () => {
                 'utf8',
             );
 
-            const calls = [];
+            const calls: PublishRunnerArguments[] = [];
             const result = releaseBoundArticles({
                 rootDir,
                 runner: (...args) => calls.push(args),
@@ -947,7 +1003,7 @@ test('one body edit publishes only its bound target', () => {
             'utf8',
         );
 
-        const calls = [];
+        const calls: PublishCall[] = [];
         const result = releaseBoundArticles({
             rootDir,
             runner: (_runnerRoot, basename, target) => {
@@ -975,7 +1031,7 @@ test('one tag edit publishes only its bound target', () => {
             'utf8',
         );
 
-        const calls = [];
+        const calls: PublishCall[] = [];
         const result = releaseBoundArticles({
             rootDir,
             runner: (_runnerRoot, basename, target) => {
@@ -1009,10 +1065,40 @@ test('body projection normalizes transport and redundant blank lines', () => {
 });
 
 test('publish projection ignores transport metadata and serialization edges', () => {
-    const article = (data, content) => ({
+    const article = (
+        data: UnknownRecord,
+        content: string,
+    ): PublicationArticleWithTarget => ({
         articleId: ARTICLE_A,
-        mapEntry: { item_id: ITEM_A },
-        target: { data, content },
+        source: 'articles/share/alpha.md',
+        sourceBasename: 'alpha.md',
+        sourcePath: 'pre-publish/alpha.md',
+        articleState: 'active',
+        desired: 'published',
+        sourceData: {
+            article_id: ARTICLE_A,
+            local_updated_at: '2026-07-23T00:00:00.000Z',
+            tags: ['Fixture'],
+            title: 'Alpha title',
+        },
+        sourceBody: content,
+        mapEntry: {
+            binding_state: 'bound',
+            item_id: ITEM_A,
+        },
+        target: {
+            file: 'remote-alpha.md',
+            basename: 'remote-alpha',
+            filePath: 'public/remote-alpha.md',
+            data: {
+                id: ITEM_A,
+                organization_url_name: null,
+                slide: false,
+                updated_at: '2026-07-22T00:00:00.000Z',
+                ...data,
+            } as PublicArticleData,
+            content,
+        },
     });
     const publishFields = {
         title: 'Alpha title',
@@ -1052,7 +1138,7 @@ test('publish projection ignores transport metadata and serialization edges', ()
 test('build-time target drift fails before the first publish runner call', () => {
     withFixture({}, ({ rootDir, publicDir }) => {
         buildArticles({ rootDir });
-        const calls = [];
+        const calls: PublishRunnerArguments[] = [];
         assert.throws(
             () => releaseBoundArticles({
                 rootDir,
@@ -1074,7 +1160,7 @@ test('build-time target drift fails before the first publish runner call', () =>
 
 test('incomplete build coverage fails before the first publish runner call', () => {
     withFixture({}, ({ rootDir }) => {
-        const calls = [];
+        const calls: PublishRunnerArguments[] = [];
         assert.throws(
             () => releaseBoundArticles({
                 rootDir,
@@ -1098,11 +1184,11 @@ test('workflow uses the push base revision and has no bulk or forced publish pat
         'utf8',
     );
     const publishScript = fs.readFileSync(
-        path.join(repositoryRoot, 'scripts', 'publish-articles.js'),
+        path.join(repositoryRoot, 'scripts', 'publish-articles.ts'),
         'utf8',
     );
     const releaseScript = fs.readFileSync(
-        path.join(repositoryRoot, 'scripts', 'release-articles.js'),
+        path.join(repositoryRoot, 'scripts', 'release-articles.ts'),
         'utf8',
     );
     assert.match(workflow, /BASELINE_REF: \$\{\{ github\.event\.before \}\}/);
@@ -1113,10 +1199,10 @@ test('workflow uses the push base revision and has no bulk or forced publish pat
     assert.match(workflow, /run: npx qiita pull --force/);
     assert.match(workflow, /run: npm run release:bound/);
     assert.doesNotMatch(workflow, /run: npm run publish:planned/);
-    assert.equal(packageJson.scripts['release:bound'], 'node scripts/release-articles.js');
+    assert.equal(packageJson.scripts['release:bound'], 'node scripts/release-articles.ts');
     assert.equal(
         packageJson.scripts['prepare:pull'],
-        'node scripts/prepare-pull.js',
+        'node scripts/prepare-pull.ts',
     );
     assert.equal(Object.hasOwn(packageJson.scripts, 'publish:planned'), false);
     assert.doesNotMatch(publishScript, /require\.main\s*===\s*module/);
