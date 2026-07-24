@@ -1,162 +1,159 @@
-const fs = require('fs-extra');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 const matter = require('gray-matter');
+const {
+    INLINE_REFERENCE_PATTERN,
+    SERIES_END,
+    SERIES_START,
+    RegistryValidationError,
+    articleMarker,
+    loadPublicationContext,
+} = require('./lib/article-registry');
 
-/**
- * <<<タイトル>>> 記法を文中から検出し、対応するQiita記事へのリンク形式に変換する関数。
- * 
- * 例: <<<タイトル>>> -> [タイトル](https://qiita.com/SolitudeRA/items/記事ID)
- * 
- * @param {string} content 対象記事のテキストコンテンツ
- * @param {Array} articles Qiita公開記事の配列。各記事は { title, id, ... } を持つ。
- * @returns {string} 変換後のテキストコンテンツ
- */
-function replaceInlineSeriesLinks(content, articles) {
-    const regex = /<<<([^>]+)>>>/g;
-    return content.replace(regex, (match, p1) => {
-        const title = p1.trim();
-        const foundArticle = articles.find(a => a.title === title);
-        if (foundArticle && foundArticle.id) {
-            const qiitaLink = `https://qiita.com/SolitudeRA/items/${foundArticle.id}`;
-            return `[${title}](${qiitaLink})`;
-        }
-        // 対応する記事が見つからない場合はそのまま返す
-        return match;
+function replaceInlineArticleLinks(content, context) {
+    return content.replace(INLINE_REFERENCE_PATTERN, (_match, rawTarget) => {
+        const articleId = /^article:([0-9a-f]{32})$/.exec(rawTarget.trim())[1];
+        const target = context.articlesById.get(articleId);
+        return `[${target.sourceData.title}]`
+            + `(https://qiita.com/${context.qiitaUser}/items/${target.mapEntry.item_id})`;
     });
 }
 
-/**
- * pre-publish と public ディレクトリにある記事に基づいてシリーズ記事リンクを生成し、
- * Qiita公開記事内にシリーズ情報を挿入または更新する関数。
- * また、本文中にある <<<タイトル>>> 記法を Qiitaリンクに置き換える。
- * 
- * @param {string} prePublishDir シリーズ記事が格納されているディレクトリパス
- * @param {string} publicDir 公開済みQiita記事が格納されているディレクトリパス
- */
-const generateSeriesLinks = (prePublishDir, publicDir) => {
-    const SERIES_START = '<!-- START_SERIES -->';
-    const SERIES_END = '<!-- END_SERIES -->';
+function countOccurrences(content, needle) {
+    return content.split(needle).length - 1;
+}
 
-    // ディレクトリ存在確認
-    if (!fs.existsSync(prePublishDir) || !fs.existsSync(publicDir)) {
-        console.error(`エラー: ディレクトリが見つかりません: ${prePublishDir}, ${publicDir}`);
-        process.exit(1);
+function removeSeriesBlock(content) {
+    const startIndex = content.indexOf(SERIES_START);
+    if (startIndex === -1) {
+        return content;
     }
+    const endIndex = content.indexOf(SERIES_END, startIndex);
+    return `${content.slice(0, startIndex)}${content.slice(endIndex + SERIES_END.length)}`
+        .replace(/\n{3,}/g, '\n\n');
+}
 
-    // pre-publish ディレクトリ内の記事を読み込み、タイトルとシリーズを取得
-    const prePublishArticles = fs.readdirSync(prePublishDir)
-        .filter((file) => file.endsWith('.md'))
-        .map((file) => {
-            const filePath = path.join(prePublishDir, file);
-            const content = fs.readFileSync(filePath, 'utf8');
-            const parsed = matter(content);
-            return {
-                file,
-                title: parsed.data.title,
-                series: parsed.data.series || null, // series プロパティがない場合は null
-            };
-        })
-        .filter((article) => article.series); // series が定義されていない記事は除外
+function insertSeriesBlock(content, article, seriesArticles, context) {
+    const links = seriesArticles
+        .filter((candidate) => candidate.articleId !== article.articleId)
+        .map((candidate) => (
+            `[${candidate.sourceData.title}]`
+            + `(https://qiita.com/${context.qiitaUser}/items/${candidate.mapEntry.item_id})`
+        ));
+    const block = [
+        SERIES_START,
+        '',
+        `${article.sourceData.series} シリーズ記事：`,
+        '',
+        ...links,
+        '',
+        SERIES_END,
+    ].join('\n');
 
-    if (prePublishArticles.length === 0) {
-        console.log("シリーズが定義されている記事が pre-publish ディレクトリにありません。処理を終了します。");
-        return;
-    }
+    const withoutOldBlock = removeSeriesBlock(content);
+    const marker = articleMarker(article.articleId);
+    const markerIndex = withoutOldBlock.indexOf(marker);
+    const afterMarkerIndex = markerIndex + marker.length;
+    const before = withoutOldBlock.slice(0, afterMarkerIndex);
+    const after = withoutOldBlock
+        .slice(afterMarkerIndex)
+        .replace(/^(?:\r?\n)+/, '');
+    return `${before}\n\n${block}\n\n${after}`;
+}
 
-    // public ディレクトリ内の記事を読み込み、タイトルと ID を取得
-    const publicArticles = fs.readdirSync(publicDir)
-        .filter((file) => file.endsWith('.md'))
-        .map((file) => {
-            const filePath = path.join(publicDir, file);
-            const content = fs.readFileSync(filePath, 'utf8');
-            const parsed = matter(content);
-            return {
-                file,
-                title: parsed.data.title,
-                id: parsed.data.id,
-                metadata: parsed.data,
-                content: parsed.content,
-            };
-        });
+function planSeriesLinks(options = {}) {
+    const rootDir = path.resolve(options.rootDir || path.join(__dirname, '..'));
+    const context = loadPublicationContext({ rootDir, requirePublicTargets: true });
+    const errors = [];
+    const seriesGroups = new Map();
 
-    // pre-publish 記事を series ごとにグループ化
-    const seriesMap = {};
-    prePublishArticles.forEach((article) => {
-        if (!seriesMap[article.series]) {
-            seriesMap[article.series] = [];
+    for (const article of context.articles) {
+        if (typeof article.sourceData.series !== 'string') {
+            continue;
         }
-        seriesMap[article.series].push(article);
-    });
+        if (!seriesGroups.has(article.sourceData.series)) {
+            seriesGroups.set(article.sourceData.series, []);
+        }
+        seriesGroups.get(article.sourceData.series).push(article);
+    }
+    for (const group of seriesGroups.values()) {
+        // 既存実装と同じく source ファイル名順。ただし同一性には使用しない。
+        group.sort((left, right) => left.sourceBasename.localeCompare(right.sourceBasename));
+    }
 
-    // 各シリーズについてリンク生成と更新を実行
-    Object.keys(seriesMap).forEach((series) => {
-        const articlesInSeries = seriesMap[series];
+    const writes = [];
+    for (const article of context.articles) {
+        const content = article.target.content;
+        const marker = articleMarker(article.articleId);
+        if (!content.includes(marker)) {
+            errors.push(
+                `public/${article.target.file}: parser が生成する article-id marker がありません`,
+            );
+            continue;
+        }
 
-        // ファイル名順でソート（必要に応じてカスタマイズ可能）
-        articlesInSeries.sort((a, b) => a.file.localeCompare(b.file));
-
-        articlesInSeries.forEach((article) => {
-            const publicArticle = publicArticles.find((pub) => pub.title === article.title);
-            if (!publicArticle) {
-                console.error(`エラー: 該当する public 記事が見つかりません: ${article.title}`);
-                return;
+        const series = article.sourceData.series;
+        let updatedBody = content;
+        if (typeof series === 'string') {
+            const startCount = countOccurrences(content, SERIES_START);
+            const endCount = countOccurrences(content, SERIES_END);
+            if (startCount !== endCount || startCount > 1) {
+                errors.push(
+                    `public/${article.target.file}: series marker が不正です `
+                    + `(START=${startCount}, END=${endCount})`,
+                );
+                continue;
             }
-
-            // 現在の記事を除くシリーズ内記事へのリンクを作成
-            const filteredArticles = articlesInSeries.filter((a) => a.title !== article.title);
-
-            const seriesLinks = `${SERIES_START}\n\n` +
-                `${article.series} シリーズ記事：\n\n` +
-                filteredArticles.map((filteredArticle) => {
-                    const targetArticle = publicArticles.find((pub) => pub.title === filteredArticle.title);
-                    if (!targetArticle || !targetArticle.id) {
-                        console.error(`エラー: 該当する public 記事が見つかりません: ${filteredArticle.title}`);
-                        return null;
-                    }
-                    return `[${filteredArticle.title}](https://qiita.com/SolitudeRA/items/${targetArticle.id})`;
-                }).filter(Boolean).join('\n') +
-                `\n\n${SERIES_END}`;
-
-            // 記事内容を行単位で分解し、シリーズリンクブロックを挿入または更新
-            const contentLines = publicArticle.content.split('\n');
-            const startIndex = contentLines.indexOf(SERIES_START);
-            const endIndex = contentLines.indexOf(SERIES_END);
-
-            if (startIndex !== -1 && endIndex !== -1) {
-                // 既存のシリーズリンクブロックがある場合は置き換え
-                contentLines.splice(startIndex, endIndex - startIndex + 1, ...seriesLinks.split('\n'));
-                console.log(`シリーズリンクを更新しました: ${publicArticle.file}`);
-            } else {
-                // シリーズリンクブロックがない場合は先頭に追加
-                contentLines.unshift(seriesLinks);
-                console.log(`シリーズリンクを挿入しました: ${publicArticle.file}`);
+            if (startCount === 1
+                && content.indexOf(SERIES_END) < content.indexOf(SERIES_START)) {
+                errors.push(`public/${article.target.file}: series marker の順序が不正です`);
+                continue;
             }
+            updatedBody = insertSeriesBlock(
+                updatedBody,
+                article,
+                seriesGroups.get(series),
+                context,
+            );
+        }
 
-            // コンテンツ再構築および <<<タイトル>>> のリンク置換
-            let updatedContent = contentLines.join('\n').replace(/\n{3,}/g, '\n\n');
-            updatedContent = replaceInlineSeriesLinks(updatedContent, publicArticles); // <<<タイトル>>> -> Qiitaリンク変換
-
-            const newFileContent = matter.stringify(updatedContent, publicArticle.metadata);
-
-            const publicFilePath = path.join(publicDir, publicArticle.file);
-            fs.writeFileSync(publicFilePath, newFileContent, 'utf8');
+        updatedBody = replaceInlineArticleLinks(updatedBody, context)
+            .replace(/\n{3,}/g, '\n\n');
+        writes.push({
+            articleId: article.articleId,
+            targetFile: article.target.file,
+            targetPath: article.target.filePath,
+            content: matter.stringify(updatedBody, article.target.data),
         });
-    });
+    }
 
-    console.log('シリーズリンクの生成と更新が完了しました。');
+    if (errors.length > 0) {
+        throw new RegistryValidationError(errors);
+    }
+    return { context, writes };
+}
+
+function writeSeriesLinks(options = {}) {
+    const plan = planSeriesLinks(options);
+    for (const write of plan.writes) {
+        fs.writeFileSync(write.targetPath, write.content, 'utf8');
+        console.log(`Generated links: ${write.articleId} (${write.targetFile})`);
+    }
+    return plan;
+}
+
+module.exports = {
+    planSeriesLinks,
+    replaceInlineArticleLinks,
+    writeSeriesLinks,
 };
 
-module.exports = generateSeriesLinks;
-
-// コマンドライン引数からディレクトリを取得して実行
 if (require.main === module) {
-    const prePublishDir = process.argv[2];
-    const publicDir = process.argv[3];
-
-    if (!prePublishDir || !publicDir) {
-        console.error("エラー: ディレクトリ引数が不足しています。使用方法: node generate-series-links.js <pre-publish-dir> <public-dir>");
-        process.exit(1);
+    try {
+        const plan = writeSeriesLinks();
+        console.log(`ID-first リンクを ${plan.writes.length} 記事へ生成しました。`);
+    } catch (error) {
+        console.error(error.message);
+        process.exitCode = 1;
     }
-
-    generateSeriesLinks(prePublishDir, publicDir);
 }

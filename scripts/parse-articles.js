@@ -1,109 +1,134 @@
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 const matter = require('gray-matter');
+const {
+    injectArticleMarker,
+    loadPublicationContext,
+} = require('./lib/article-registry');
 
-// ソースディレクトリとターゲットディレクトリを定義
-const sourceDir = path.join(__dirname, '../pre-publish');
-const targetDir = path.join(__dirname, '../public');
+const ASCII_TAG_IDENTITY_SEPARATORS = /[._\-\u0009-\u000d\u0020]/g;
 
-// ターゲットディレクトリが存在するか確認
-if (!fs.existsSync(targetDir)) {
-    fs.mkdirSync(targetDir, { recursive: true });
+function sourceOrRemote(sourceData, remoteData, fieldName, fallback) {
+    if (Object.hasOwn(sourceData, fieldName)) {
+        return sourceData[fieldName];
+    }
+    if (Object.hasOwn(remoteData, fieldName)) {
+        return remoteData[fieldName];
+    }
+    return fallback;
 }
 
-// `pre-publish` フォルダ内のMarkdownファイルを処理
-fs.readdirSync(sourceDir).forEach((file) => {
-    const sourceFilePath = path.join(sourceDir, file);
-
-    if (path.extname(file) === '.md') {
-        const sourceContent = fs.readFileSync(sourceFilePath, 'utf-8');
-        const { data: sourceData, content: sourceBody } = matter(sourceContent);
-
-        // `title` と `local_updated_at` が存在するか確認
-        if (!sourceData.title || !sourceData.local_updated_at) {
-            console.error(`エラー: 必須フィールド (title または local_updated_at) が見つかりません: ${file}。スキップします...`);
-            return;
-        }
-
-        // `public` 内で同じタイトルのファイルを検索
-        const targetFile = fs
-            .readdirSync(targetDir)
-            .find((targetFile) => {
-                if (path.extname(targetFile) !== '.md') return false;
-                const targetContent = fs.readFileSync(path.join(targetDir, targetFile), 'utf-8');
-                const { data: targetData } = matter(targetContent);
-                return targetData.title === sourceData.title;
-            });
-
-        // 同じタイトルのファイルが見つかった場合
-        if (targetFile) {
-            const targetFilePath = path.join(targetDir, targetFile);
-            const targetContent = fs.readFileSync(targetFilePath, 'utf-8');
-            const { data: targetData, content: targetBody } = matter(targetContent);
-
-            const targetUpdatedAt = new Date(targetData.updated_at).getTime();
-            const sourceUpdatedAt = new Date(sourceData.local_updated_at).getTime();
-
-            if (sourceUpdatedAt > targetUpdatedAt) {
-                console.log(`更新中: ${targetFile} (新しいバージョンが検出されました)`);
-
-                // 内容のみ更新し、ヘッダーは保持
-                const updatedContent = matter.stringify(sourceBody, targetData);
-                fs.writeFileSync(targetFilePath, updatedContent, 'utf-8');
-            } else {
-                console.log(`Skipping: ${targetFile} (No updates detected)`);
-            }
-        } else {
-            // デフォルトフィールドをマージ (ファイルが存在しない場合のみ)
-            const defaultFields = {
-                title: 'No Title',
-                tags: ['default'],
-                private: false,
-                updated_at: null,
-                local_updated_at: formatWithTimezone(new Date()),
-                id: null,
-                organization_url_name: null,
-                slide: false,
-                ignorePublish: false,
-            };
-
-            const metadata = { ...defaultFields, ...sourceData };
-
-            // `tags` フィールドが空の場合、デフォルト値を設定
-            if (!metadata.tags || metadata.tags.length === 0) {
-                metadata.tags = ['default'];
-            }
-
-            const targetFilePath = path.join(targetDir, file);
-            const updatedContent = matter.stringify(sourceBody, metadata);
-            fs.writeFileSync(targetFilePath, updatedContent, 'utf-8');
-            console.log(`Processed: ${file}`);
-        }
+function normalizeTagIdentity(tag) {
+    if (typeof tag !== 'string') {
+        return null;
     }
-});
+    const identity = tag
+        .normalize('NFKC')
+        .toLocaleLowerCase('en-US')
+        .replace(ASCII_TAG_IDENTITY_SEPARATORS, '');
+    return identity === '' ? null : identity;
+}
 
-// 日付を `YYYY-MM-DDTHH:mm:ss+HH:mm` フォーマットで整形
-function formatWithTimezone(date) {
-    const offset = -date.getTimezoneOffset(); // タイムゾーンのオフセットを分単位で取得
-    const sign = offset >= 0 ? "+" : "-"; // タイムゾーンの正負を判定
-    const hours = Math.abs(Math.floor(offset / 60)).toString().padStart(2, "0");
-    const minutes = Math.abs(offset % 60).toString().padStart(2, "0");
+function indexUniqueTags(tags) {
+    if (!Array.isArray(tags)) {
+        return null;
+    }
+    const byIdentity = new Map();
+    for (const tag of tags) {
+        const identity = normalizeTagIdentity(tag);
+        if (identity === null || byIdentity.has(identity)) {
+            return null;
+        }
+        byIdentity.set(identity, tag);
+    }
+    return byIdentity;
+}
 
-    return (
-        date.getFullYear() +
-        "-" +
-        (date.getMonth() + 1).toString().padStart(2, "0") +
-        "-" +
-        date.getDate().toString().padStart(2, "0") +
-        "T" +
-        date.getHours().toString().padStart(2, "0") +
-        ":" +
-        date.getMinutes().toString().padStart(2, "0") +
-        ":" +
-        date.getSeconds().toString().padStart(2, "0") +
-        sign +
-        hours +
-        ":" +
-        minutes
+function selectBoundTargetTags(sourceTags, remoteTags) {
+    const fallback = Array.isArray(sourceTags) ? [...sourceTags] : sourceTags;
+    const sourceByIdentity = indexUniqueTags(sourceTags);
+    const remoteByIdentity = indexUniqueTags(remoteTags);
+    // 既存 binding の表示差分だけを保護する。集合差分や衝突は実編集として
+    // source を優先し、曖昧な対応を推測しない。
+    if (
+        sourceByIdentity === null
+        || remoteByIdentity === null
+        || sourceByIdentity.size !== remoteByIdentity.size
+        || [...sourceByIdentity.keys()].some(
+            (identity) => !remoteByIdentity.has(identity),
+        )
+    ) {
+        return fallback;
+    }
+    return sourceTags.map(
+        (tag) => remoteByIdentity.get(normalizeTagIdentity(tag)),
     );
+}
+
+function planPublicArticles(options = {}) {
+    const rootDir = path.resolve(options.rootDir || path.join(__dirname, '..'));
+
+    // loadPublicationContext は manifest / map / source / public の全件を検証する。
+    // この呼び出しが成功するまで、生成先へは一切書き込まない。
+    const context = loadPublicationContext({ rootDir, requirePublicTargets: true });
+    const writes = context.articles.map((article) => {
+        const remoteData = article.target.data;
+        const sourceData = article.sourceData;
+        const metadata = {
+            title: sourceData.title,
+            tags: selectBoundTargetTags(sourceData.tags, remoteData.tags),
+            // manifest の active + targets.qiita.desired=published は公開記事を意味する。
+            // pull 済み target が private:true でも引き継がない。
+            private: false,
+            updated_at: remoteData.updated_at,
+            id: article.mapEntry.item_id,
+            organization_url_name: sourceOrRemote(
+                sourceData,
+                remoteData,
+                'organization_url_name',
+                null,
+            ),
+            slide: sourceOrRemote(sourceData, remoteData, 'slide', false),
+            ignorePublish: false,
+        };
+        const body = injectArticleMarker(article.sourceBody, article.articleId);
+
+        return {
+            articleId: article.articleId,
+            itemId: article.mapEntry.item_id,
+            source: article.source,
+            targetFile: article.target.file,
+            targetPath: article.target.filePath,
+            content: matter.stringify(body, metadata),
+        };
+    });
+
+    return { context, writes };
+}
+
+function writePublicArticles(options = {}) {
+    const plan = planPublicArticles(options);
+    for (const write of plan.writes) {
+        fs.writeFileSync(write.targetPath, write.content, 'utf8');
+        console.log(
+            `Prepared: ${write.articleId} -> ${write.itemId} (${write.targetFile})`,
+        );
+    }
+    return plan;
+}
+
+module.exports = {
+    planPublicArticles,
+    selectBoundTargetTags,
+    writePublicArticles,
+};
+
+if (require.main === module) {
+    try {
+        const plan = writePublicArticles();
+        console.log(`ID-first 形式で ${plan.writes.length} 記事を準備しました。`);
+    } catch (error) {
+        console.error(error.message);
+        process.exitCode = 1;
+    }
 }
